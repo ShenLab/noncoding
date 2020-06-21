@@ -27,14 +27,14 @@ annot_dict = {
     'hg19_genes_exons': np.array([0,1,0,0,0,0]),
     'hg19_genes_1to5kb': np.array([0,0,1,0,0,0]),
     'hg19_genes_promoters': np.array([0,0,0,1,0,0]),
-    'hg19_genes_3UTRs': np.array([0,0,0,0,0,1]),
-    'hg19_genes_5UTRs': np.array([0,0,0,0,1,0]),
+    'hg19_genes_3UTRs': np.array([0,0,0,0,1,0]),
+    'hg19_genes_5UTRs': np.array([0,0,0,0,0,1]),
     'no_annot': np.array([0,0,0,0,0,0])
 }
 
 def encode_annot(annotations):
   n = len(annotations)
-  a = np.empty((n,5))
+  a = np.empty((n,6))
   for i in range(n):
     a[i] = annot_dict[annotations.iloc[i]]
   return a
