@@ -10,13 +10,15 @@ base_dict = {
     'N': np.array([0,0,0,0])
 }
 
-def encode_seq(sequences):
+def encode_seq(sequences, max_len):
   n = len(sequences)
-  a = np.empty((n,1000,4))
+  a = np.empty((n,max_len,4))
   for i in range(n):
     seq = sequences.iloc[i]
+    pad = max_len - len(seq)
+    seq += pad*'N'
     seq_array = list(seq)
-    for j in range(1000):
+    for j in range(max_len):
       base = seq_array[j]
       a[i][j] = base_dict[base]
   return a
@@ -40,8 +42,8 @@ def encode_annot(annotations):
   return a
 
 #format data correctly to input into model
-def get_formatted_data(X_df, Y_df):
-  seq_array = encode_seq(X_df['sequence'])
+def get_formatted_data(X_df, Y_df, max_len):
+  seq_array = encode_seq(X_df['sequence'], max_len)
   gene_array = X_df['lnTPM'].to_numpy()
   annot_array = encode_annot(X_df['annot'])
   label_array = Y_df['label'].to_numpy()
