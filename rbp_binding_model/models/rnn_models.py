@@ -5,12 +5,12 @@ from keras.regularizers import l2
 from keras import backend as tf
 
 # CNN-LSTM combined model
-def get_cnn_rnn_model(max_len):
-  model_in = Input(shape=(max_len,4))
+def get_cnn_rnn_model(input_shape, out_dim):
+  model_in = Input(shape=input_shape)
   rank_in = Input(shape=(1,))
   annot_in = Input(shape=(6,))
 
-  conv = Conv1D(100, kernel_size=8, activation='relu', input_shape=(max_len,4), 
+  conv = Conv1D(100, kernel_size=8, activation='relu', input_shape=input_shape, 
                     kernel_regularizer=l2(.01))(model_in)
   pooling = MaxPooling1D(pool_size=4, strides=None, padding='valid')(conv)
   drop1 = Dropout(.2)(pooling)
@@ -29,19 +29,19 @@ def get_cnn_rnn_model(max_len):
   dense_annot = Dense(6,)(annot_in)
 
   mult_layer_gene_annot = Concatenate()([dense2, dense_rank, dense_annot])
-  model_gene_annot_out = Dense(1, activation="sigmoid")(mult_layer_gene_annot)
+  model_gene_annot_out = Dense(out_dim, activation="sigmoid")(mult_layer_gene_annot)
   model_gene_annot = Model(inputs=[model_in, rank_in, annot_in], outputs=model_gene_annot_out)
 
   return model_gene_annot
 
 
 # Simple RNN model
-def get_rnn_model(max_len):
-  model_in = Input(shape=(max_len,4))
+def get_rnn_model(input_shape, out_dim):
+  model_in = Input(shape=input_shape)
   rank_in = Input(shape=(1,))
   annot_in = Input(shape=(6,))
 
-  lstm = LSTM(50, return_sequences=True, activation='relu', input_shape=(max_len,4), kernel_regularizer=l2(.01))(model_in)
+  lstm = LSTM(50, return_sequences=True, activation='relu', input_shape=input_shape, kernel_regularizer=l2(.01))(model_in)
   drop2 = Dropout(.5)(lstm)
 
   flat = Flatten()(drop2)
@@ -53,7 +53,7 @@ def get_rnn_model(max_len):
   dense_annot = Dense(6,)(annot_in)
 
   mult_layer_gene_annot = Concatenate()([dense2, dense_rank, dense_annot])
-  model_gene_annot_out = Dense(1, activation="sigmoid")(mult_layer_gene_annot)
+  model_gene_annot_out = Dense(out_dim, activation="sigmoid")(mult_layer_gene_annot)
   model_gene_annot = Model(inputs=[model_in, rank_in, annot_in], outputs=model_gene_annot_out)
 
   return model_gene_annot
@@ -82,12 +82,12 @@ class attention(Layer):
         return super(attention,self).get_config()
 
 
-def get_rnn_attention_model(max_len):
-  model_in = Input(shape=(max_len,4))
+def get_rnn_attention_model(input_shape, out_dim):
+  model_in = Input(shape=input_shape)
   rank_in = Input(shape=(1,))
   annot_in = Input(shape=(6,))
 
-  conv = Conv1D(100, kernel_size=8, activation='relu', input_shape=(max_len,4), kernel_regularizer=l2(.01))(model_in)
+  conv = Conv1D(100, kernel_size=8, activation='relu', input_shape=input_shape, kernel_regularizer=l2(.01))(model_in)
   pooling = MaxPooling1D(pool_size=4, strides=None, padding='valid')(conv)
   drop1 = Dropout(.2)(pooling)
 
@@ -102,7 +102,7 @@ def get_rnn_attention_model(max_len):
   dense_annot = Dense(6,)(annot_in)
 
   mult_layer_gene_annot = Concatenate()([dense2, dense_rank, dense_annot])
-  model_gene_annot_out = Dense(1, activation="sigmoid")(mult_layer_gene_annot)
+  model_gene_annot_out = Dense(out_dim, activation="sigmoid")(mult_layer_gene_annot)
   model_gene_annot = Model(inputs=[model_in, rank_in, annot_in], outputs=model_gene_annot_out)
 
   return model_gene_annot
