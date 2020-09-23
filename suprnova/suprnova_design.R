@@ -37,7 +37,7 @@ get_model_layer_names <- function(model) {
 }
 
 # Return an activation model of the given model, with outputs specified at every layer_to_investigate listed.
-get_activation_model <- function(model, layers_to_investigate = c("conv1","maxpool1","rbp_disruption_output","d","s")) {
+get_activation_model <- function(model, layers_to_investigate = c("conv1","maxpool1","d","s")) {
     model_layer <- model$get_layer(layers_to_investigate[1])
     model_layer_names <- get_model_layer_names(model)
     layers_to_investigate <- layers_to_investigate[layers_to_investigate %in% model_layer_names]
@@ -84,7 +84,16 @@ define_supermodel_architecture <- function(type="r", L=151, num_rbps=160, num_fi
         layer_reshape(c(rbp_disruption_module_filters_pooled$shape[[2]],1)) %>% layer_upsampling_1d(L) %>% 
         layer_average_pooling_1d(rbp_disruption_module_filters_pooled$shape[[2]]) %>% 
         layer_flatten(name="rbp_disruption_output")
-
+    
+    # Adjust gene damagingness layer to follow constraints on d.
+    # Depending on how we want the representation of d to be constrained, we can adjust the following bounds:
+    d_lower_bound = -Inf; d_upper_bound = Inf
+    d_constraint <- function(w) { k_minimum(k_maximum(w, d_lower_bound), d_upper_bound) }
+    adjusted_gene_damagingness_layer <- layer_lambda(name="d", f = function(inputs) { 
+        d <- inputs[[1]]; #d <- d_constraint(d)
+        return(d)
+    }) (c(rbp_disruption_module_output))
+    
     # Add nearest gene and epigenomic features to the neural network, which are combined with gene damagingness d to make s!
     num_tissues = 10
     # Auxiliary input for gene expression
@@ -100,27 +109,13 @@ define_supermodel_architecture <- function(type="r", L=151, num_rbps=160, num_fi
     
     # Learning of selection coefficient using RBP gene regulation disruption output and gene-level features.
     # layer_multiply(c(rbp_disruption_module_output, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% # %>% #gene_damagingness_stack_layer %>% 
-    gene_damagingness_layer <- layer_multiply(c(rbp_disruption_module_output, gene_constraint_module_activation)) %>%
+    selection_coef_layer <- layer_multiply(c(rbp_disruption_module_output, gene_constraint_module_activation)) %>%
         layer_reshape(c(L,1)) %>%
         layer_dense(5, name="dense1", activation="sigmoid", use_bias=FALSE) %>%
         layer_dense(3, name="dense2", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
         layer_dense(1, name="dense3", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
         layer_dense(1, name="dense_final", use_bias=TRUE) %>%
-        layer_flatten(name="gene_damagingness")
-    # Adjust gene damagingness layer to follow constraints on d.
-    # Depending on how we want the representation of d to be constrained, we can adjust the following bounds:
-    d_lower_bound = -Inf; d_upper_bound = Inf
-    d_constraint <- function(w) { k_minimum(k_maximum(w, d_lower_bound), d_upper_bound) }
-    adjusted_gene_damagingness_layer <- layer_lambda(name="d", f = function(inputs) { 
-        d <- inputs[[1]]; #d <- d_constraint(d)
-        return(d)
-    }) (c(gene_damagingness_layer))
-    
-    # Auxiliary input for background mutation rate
-    background_mut_rate_module <- layer_input(name="background_mut_rate", shape = c(L))
-    
-    # Auxiliary input for y_true (observed allele frequency)
-    y_true_module <- layer_input(name="y_true", shape = c(L))
+        layer_flatten(name="selection_coef_output")
     
     # Adjust selection coefficient layer to follow constraints on s.
     # exp(s * s_scaling_factor) has to be [0,1] in the end, so there need to be according bounds for the neural net's representation of s. 
@@ -129,7 +124,13 @@ define_supermodel_architecture <- function(type="r", L=151, num_rbps=160, num_fi
     adjusted_selection_coef_layer <- layer_lambda(name="s", f = function(inputs) { 
         s <- inputs[[1]]; #s <- s_constraint(s)
         return(s)
-    }) (c(adjusted_gene_damagingness_layer))
+    }) (c(selection_coef_layer))
+    
+    # Auxiliary input for background mutation rate
+    background_mut_rate_module <- layer_input(name="background_mut_rate", shape = c(L))
+    
+    # Auxiliary input for y_true (observed allele frequency)
+    y_true_module <- layer_input(name="y_true", shape = c(L))
     
     # Define the Negative Binomial Loss layer, which calculates the negative logloss of the fit of our predicted s given the observed allele count (y_true * sample_size) and background mutation rate mu.  
     # Old Poisson method: log_probs <- k_mean(y_true) %>% (tfp$distributions$Poisson(rate=(k_mean(y_pred)))$log_prob)
