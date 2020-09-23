@@ -108,8 +108,8 @@ define_supermodel_architecture <- function(type="r", L=151, num_rbps=160, num_fi
         layer_flatten() %>% layer_dense(1, name="epigenomic_activation", activation="sigmoid", use_bias=FALSE) 
     
     # Learning of selection coefficient using RBP gene regulation disruption output and gene-level features.
-    # layer_multiply(c(rbp_disruption_module_output, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% # %>% #gene_damagingness_stack_layer %>% 
-    selection_coef_layer <- layer_multiply(c(rbp_disruption_module_output, gene_constraint_module_activation)) %>%
+    # layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% # %>% #gene_damagingness_stack_layer %>% 
+    selection_coef_layer <- layer_multiply(c(adjusted_gene_damagingness_layer, gene_constraint_module_activation)) %>%
         layer_reshape(c(L,1)) %>%
         layer_dense(5, name="dense1", activation="sigmoid", use_bias=FALSE) %>%
         layer_dense(3, name="dense2", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
