@@ -247,38 +247,29 @@ process_gencode <- function() {
     saveRDS(noncoding_exon_granges, output_path(paste0("gencode_noncoding_exon_granges_hg38.rds")))
 }
 
-# Return a data frame of randomly sampled variants for each desired region type, with a specified number to sample per type.
-sample_region_type_variants <- function(region_types = c("five_prime_UTR", "three_prime_UTR", "five_prime_ss", "three_prime_ss", "intron", "CDS"), regions_to_sample_per_type = 20000, width = 151) {
-    sampled_region_type_variants <- unfactorize(rbindlist(lapply(region_types, function(region_type) {
-        region_type_granges <- readRDS(output_path(paste0("gencode_",region_type,"_granges_hg38.rds")))
-        sampled_indices <- 1:length(region_type_granges)
-        sampled_indices <- sample(1:length(region_type_granges), regions_to_sample_per_type, replace=TRUE)
-        sampled_regions_for_type <- rbindlist(lapply(1:length(sampled_indices), function(i) {
-            if(i %% 1000 == 1) { print(paste0("Sampling ",region_type,": ",i," / ",length(sampled_indices))) }
-            sampled_i = sampled_indices[i]
-            region <- region_type_granges[sampled_i]
-            region_chrom = seqnames(region); region_start = start(region); region_end = end(region)
-            possible_starts <- region_start:(region_end-width+1)
-            if(length(possible_starts) > 1 && possible_starts[2] > possible_starts[1]) { # Region is longer than width
-                region_start <- sample(possible_starts, 1); region_end <- region_start + width - 1
-                start <- region_start; end <- region_end
-            } else { 
-                midpoint <- region_start + floor((region_end - region_start + 1)/2)
-                arm_width = floor(width/2)
-                start <- midpoint - arm_width; end <- start + width - 1
-            }
-            random_region <- data.frame(unlist(c(region_type, i, region_chrom, start, end, region_start, region_end)))
-            colnames(random_region) <- c("region_type", "index", "Chrom", "start", "end", "region_start", "region_end")
-            return(random_region)
-        }))
-    })))
-    return(sampled_region_type_variants)
+# Return a data frame of a specified number of randomly sampled variants from gnomAD, with optional limitation to a certain desired region type.
+sample_gnomad_variants <- function(N, region_type=NULL, af_cutoff=1e-3) {
+    print("Reading gnomAD data...")
+    gnomad_trimers <- readRDS(data_path("hg38_gnomad3.0_genome_snvs_trimers.rds"))
+    if(!is.null(af_cutoff)) {  gnomad_trimers <- gnomad_trimers[gnomad_trimers$AF < af_cutoff,] }
+    if(is.null(region_type)) { num_gnomAD_variants_to_sample = N } else { num_gnomAD_variants_to_sample <- N * 1000 }
+    
+    print("Sampling gnomAD variants...")
+    if(num_gnomAD_variants_to_sample > nrow(gnomad_trimers)) {
+        num_gnomAD_variants_to_sample = nrow(gnomad_trimers)
+        gnomad_dat <- unfactorize(data.frame(gnomad_trimers))
+    } else { gnomad_dat <- unfactorize(data.frame(gnomad_trimers[sample(1:nrow(gnomad_trimers), num_gnomAD_variants_to_sample),])) }
+    
+    if(!is.null(region_type)) {
+        gnomad_dat_annot <- annotate_region_types(gnomad_dat, "hg38", region_type)
+        gnomad_dat <- gnomad_dat[sample(which(gnomad_dat_annot[,region_type] == TRUE), min(c(N,num_gnomAD_variants_to_sample)))]
+    }
+    return(gnomad_dat)
 }
-# saveRDS(sample_region_type_variants(), output_path("sampled_region_type_variants_dat.rds"))
 
 # Annotate the data with the specified region types. 
 # CDS / coding sequence can be optionally broken up into syn/mis/nonsense if breakdown_CDS is set to TRUE, but note this part of the code is still in testing.
-annotate_region_types <- function(dat, version="hg19", label_colname="ref_sequence", region_types=c("CDS","five_prime_UTR","three_prime_UTR","five_prime_ss","three_prime_ss","intron","intergenic"), breakdown_CDS=FALSE, num_variants_to_sample=NULL) {
+annotate_region_types <- function(dat, version="hg19", region_types=c("CDS","five_prime_UTR","three_prime_UTR","five_prime_ss","three_prime_ss","intron","intergenic"), breakdown_CDS=FALSE, num_variants_to_sample=NULL, label_colname="ref_sequence") {
     if(is.null(num_variants_to_sample) || num_variants_to_sample > nrow(dat_trimers)) {
         num_variants_to_sample = nrow(dat)
         a <- unfactorize(data.frame(dat))
@@ -331,6 +322,34 @@ annotate_region_types <- function(dat, version="hg19", label_colname="ref_sequen
     
     region_annotation <- Reduce(cbind, region_annotation)
     return(region_annotation)
+}
+
+# Return a data frame of randomly sampled variants for each desired region type, with a specified number to sample per type.
+sample_region_type_variants <- function(region_types = c("five_prime_UTR", "three_prime_UTR", "five_prime_ss", "three_prime_ss", "intron", "CDS"), regions_to_sample_per_type = 20000, width = 151) {
+    sampled_region_type_variants <- unfactorize(rbindlist(lapply(region_types, function(region_type) {
+        region_type_granges <- readRDS(output_path(paste0("gencode_",region_type,"_granges_hg38.rds")))
+        sampled_indices <- 1:length(region_type_granges)
+        sampled_indices <- sample(1:length(region_type_granges), regions_to_sample_per_type, replace=TRUE)
+        sampled_regions_for_type <- rbindlist(lapply(1:length(sampled_indices), function(i) {
+            if(i %% 1000 == 1) { print(paste0("Sampling ",region_type,": ",i," / ",length(sampled_indices))) }
+            sampled_i = sampled_indices[i]
+            region <- region_type_granges[sampled_i]
+            region_chrom = seqnames(region); region_start = start(region); region_end = end(region)
+            possible_starts <- region_start:(region_end-width+1)
+            if(length(possible_starts) > 1 && possible_starts[2] > possible_starts[1]) { # Region is longer than width
+                region_start <- sample(possible_starts, 1); region_end <- region_start + width - 1
+                start <- region_start; end <- region_end
+            } else { 
+                midpoint <- region_start + floor((region_end - region_start + 1)/2)
+                arm_width = floor(width/2)
+                start <- midpoint - arm_width; end <- start + width - 1
+            }
+            random_region <- data.frame(unlist(c(region_type, i, region_chrom, start, end, region_start, region_end)))
+            colnames(random_region) <- c("region_type", "index", "Chrom", "start", "end", "region_start", "region_end")
+            return(random_region)
+        }))
+    })))
+    return(sampled_region_type_variants)
 }
 
 # Get particularly defined TS regions, given the genebody and left and right pillow sizes around the specified "TSS" or "TES" sites.
@@ -821,6 +840,44 @@ calculate_gradcams <- function(input_tensor, work_folder, k_reset_freq=3, motif_
             # Normalize the heatmap between 0 and 1, for better visualization.
             heatmap <- pmax(heatmap, 0)
             heatmap <- heatmap / max(heatmap)
+            
+            #################################################################################################################################################
+            # CODE FOR DRAWING SEQUENCE HEATMAPS LIKE I SHOW IN PPT!
+            #################################################################################################################################################
+            # sequence <- strsplit(tensor_to_genomic_sequences(data[sequence_to_display,,,]), "")[[1]]
+            # sequence_length <- length(sequence)
+            # sequence_matrix <- suppressWarnings(matrix(sequence, ncol=ceiling(sqrt(ncol(data))), byrow=TRUE))
+            # if((ncol(sequence_matrix) * nrow(sequence_matrix)) > sequence_length) { sequence_matrix[nrow(sequence_matrix), seq((sequence_length %% ncol(sequence_matrix))+1, ncol(sequence_matrix))] <- "" }
+            # rownames(sequence_matrix) <- paste0(seq(1, sequence_length, by=ncol(sequence_matrix)),"...",sapply(seq(ncol(sequence_matrix), sequence_length+ncol(sequence_matrix)-1, by=ncol(sequence_matrix)), function(x) min(c(x, sequence_length))))
+            # library(plotrix)
+            # filename=output_path(paste0(model_name,"_seq",sequence_to_display,"_rbp_binding_heatmap.pdf"))
+            # pdf(file=filename)
+            # plot(-1, -1, xlim=c(0,1), ylim=c(0,1), main=paste0(colnames(labels)[labels[sequence_to_display,]==1],paste0(" seq",sequence_to_display),", pred_score=",round(pred_scores[sequence_index_to_display],3)), xlab="", ylab="", xaxt="n", yaxt="n", axes=FALSE, cex.main=1.6, cex.lab=1.5) #"RBP binding strength heatmap"
+            # #mtext(paste0(colnames(labels)[labels[sequence_to_display,]==1]," sequence, pred_score=",round(pred_scores[sequence_index_to_display],3)))
+            # sequence_matrix_cols <- matrix(c(adjustcolor(rgb(colorRamp(c("blue","white","red"))(heatmap[1:sequence_length]), maxColorValue=255), alpha.f = 0.8), rep("white", (ncol(sequence_matrix) * nrow(sequence_matrix)) - sequence_length)), ncol=ceiling(sqrt(ncol(data))), byrow=TRUE)
+            # addtable2plot("topleft",table=sequence_matrix, bg=sequence_matrix_cols, display.rownames=TRUE, display.colnames=FALSE, cex=2.2)
+            # 
+            # # Determine the optimal bound region of fixed motif_length from the heatmap 
+            # motif_start_index = which.max(rollapply(heatmap, width=motif_length, mean))
+            # motif_end_index = motif_start_index + motif_length - 1
+            # trimmed_binding_site <- paste0(sequence[motif_start_index:motif_end_index], collapse="")
+            # text(0.5, 0.01, paste0("Optimal binding site: ",trimmed_binding_site), cex=1.7, font=2)
+            # 
+            # dev.off()
+            # pdf_to_png(filename)
+            # 
+            # heatmap_smoothed <- rollapply(heatmap, width=motif_length, mean, align="left", partial=TRUE)
+            # motif_start_indices <- which(heatmap_smoothed >= motif_score_min_cutoff)
+            # motif_start_indices <- motif_start_indices[order(heatmap_smoothed[motif_start_indices], decreasing=TRUE)]
+            # get_best_nonoverlapping <- function(motif_start_indices) { if(length(motif_start_indices) > 0) { return(c(motif_start_indices[1], get_best_nonoverlapping(motif_start_indices[abs(motif_start_indices - motif_start_indices[1]) >= ceiling(motif_length*motif_min_percent_distinct)]))) } else { return(c()) } }
+            # motif_start_indices <- get_best_nonoverlapping(motif_start_indices)
+            # motif_end_indices <- motif_start_indices + motif_length - 1
+            # trimmed_binding_sites <- sapply(1:length(motif_start_indices), function(motif_i) paste0(sequence[motif_start_indices[motif_i]:motif_end_indices[motif_i]], collapse=""))
+            # 
+            # motifs_dat <- unfactorize(data.frame(rep(paste0("seq",sequence_to_display),length(motif_start_indices)), rep(model_name,length(motif_start_indices)), rep(pred_scores[sequence_index_to_display],length(motif_start_indices)), motif_start_indices, motif_end_indices, trimmed_binding_sites, heatmap_smoothed[motif_start_indices], heatmap_smoothed[motif_start_indices]/heatmap_smoothed[motif_start_indices][1]))
+            # colnames(motifs_dat) <- c("seq", "model", "pred_score", "start", "end", "motif", "score", "score_norm")
+            # return(motifs_dat)
+            
             return(heatmap)
         }), along=2)
         saveRDS(seq_heatmaps, rbp_filename)
