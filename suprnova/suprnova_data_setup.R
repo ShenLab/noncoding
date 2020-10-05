@@ -153,7 +153,8 @@ unpack_muts <- function(dat, all_alts=TRUE, remove_N_bases=TRUE) {
 }
 
 # Groups sequences from unpacked ANNOVAR annotation into tensor objects
-group_seqs_into_tensors <- function(dat, re_order=TRUE) {
+dat <- readRDS(output_path("transcribed100k_1_fully_unpacked_annotated.rds")); collapse_variants=FALSE; re_order=FALSE
+group_seqs_into_tensors <- function(dat, collapse_variants=TRUE, re_order=TRUE) {
     if(re_order) {
         if("seq" %in% colnames(dat)) { dat <- dat[order(dat$seq, dat$Chrom, dat$Position),]
         } else { dat <- dat[order(dat$Chrom, dat$Position),] }
@@ -168,24 +169,34 @@ group_seqs_into_tensors <- function(dat, re_order=TRUE) {
         print(paste0("ERROR: ",rows_per_position," * ",frame_width," is not an even multiple of ",dat_num_rows))
         return(1)
     }
-    #if("seq" %in% colnames(dat)) { seqs <- dat$seq
-    #} else {
     seqs <- unlist(lapply(1:num_sequences, function(seq_i) rep(seq_i, rows_per_frame)))
-    #}
     sequences <- dat$ref_sequence
     AFs <- dat$AF
-    af_tensor <- array(0, dim=c(num_sequences, frame_width), dimnames = list(paste0("sequence_",1:num_sequences), 1:frame_width)); #colnames(mat) <- apply(expand.grid(bases, 1:sequence_length)[,c(2,1)], 1, paste0, collapse="")
-    
     dat_seq_breakpoints <- c(0,which(diff(seqs)>0),nrow(dat))
+    if(collapse_variants) { 
+        af_tensor <- array(0, dim=c(num_sequences, frame_width), dimnames = list(paste0("sequence_",1:num_sequences), 1:frame_width)) #colnames(mat) <- apply(expand.grid(bases, 1:sequence_length)[,c(2,1)], 1, paste0, collapse="")
+    } else { 
+        alts <- 1:4; names(alts) <- c("A","C","G","T"); dat_alts <- dat$Alt
+        empty_row <- rep(-1,length(alts))
+        af_tensor <- array(0, dim=c(num_sequences, frame_width, length(alts)), dimnames = list(paste0("sequence_",1:num_sequences), 1:frame_width, names(alts)))
+    }
     tensor <- abind(lapply(1:num_sequences, function(seq_i) {
         print(seq_i)
         seq_start = dat_seq_breakpoints[seq_i]+1
         seq_end = dat_seq_breakpoints[seq_i+1]
-        seq_AFs <- rollapply(AFs[seq_start:seq_end], width=rows_per_position, by=rows_per_position, FUN=sum)
-        af_tensor[seq_i,1:length(seq_AFs)] <<- seq_AFs
+        
+        if(collapse_variants) { 
+            seq_AFs <- rollapply(AFs[seq_start:seq_end], width=rows_per_position, by=rows_per_position, FUN=sum)
+            af_tensor[seq_i,1:length(seq_AFs)] <<- seq_AFs
+        } else { 
+            seq_AFs <- rollapply(seq_start:seq_end, width=rows_per_position, by=rows_per_position, FUN=function(x) {
+                filled_row <- empty_row; filled_row[alts[dat_alts[x]]] <- AFs[x]
+                return(filled_row)
+            })
+            af_tensor[seq_i,1:nrow(seq_AFs),] <<- seq_AFs
+        }
         return(genomic_sequences_to_tensor(sequences[seq_start], sequence_length=frame_width, verbose=FALSE))
-    }), along=4)
-    tensor <- aperm(tensor, c(4,2,3,1))
+    }), along=4); tensor <- aperm(tensor, c(4,2,3,1))
     
     return_env <- new.env()
     return_env[["input"]] <- tensor
@@ -695,7 +706,7 @@ annotate <- function(variants, features, features_env=NULL, variants_granges=NUL
 # Setup allele frequency-annotated data for SUPRNOVA under the given name. 
 # The function currently assumes that data is in hg38 but has a Position_hg19 column; typically, run setup_supermodel_data() function before this one.
 # Run this function multiple times (with specified number of tasks to complete) to ensure that all setup is complete; this is designed to manage RAM for large datasets.
-annotate_AFs <- function(dat_name, dat=NULL, version="hg38", num_tasks_to_do=1, rewrite=FALSE) {
+annotate_AFs <- function(dat_name, dat=NULL, version="hg38", type="r", num_tasks_to_do=1, rewrite=FALSE) {
     tasks_done = 0
     filename = output_path(paste0(dat_name,"_fully_unpacked.rds"))
     if(tasks_done < num_tasks_to_do && (!file.exists(filename) || rewrite)) {
@@ -727,16 +738,15 @@ annotate_AFs <- function(dat_name, dat=NULL, version="hg38", num_tasks_to_do=1, 
     } else if(tasks_done < num_tasks_to_do) { print(paste0(filename," already defined!")) }
     
     # Repackage annotated gnomad data into tensor objects.
-    filename = output_path(paste0(dat_name,"_AFs.rds"))
+    collapse_variants = (type != "v")
+    if(!collapse_variants) { filename = output_path(paste0(dat_name,"_AFs_variant.rds")) } else { filename = output_path(paste0(dat_name,"_AFs.rds")) }
     if(tasks_done < num_tasks_to_do && (!file.exists(filename) || rewrite)) {
         regional_fully_unpacked_annotated <- readRDS(output_path(paste0(dat_name,"_fully_unpacked_annotated.rds")))
-        regional_tensors_env <- group_seqs_into_tensors(regional_fully_unpacked_annotated, re_order=FALSE)
+        regional_tensors_env <- group_seqs_into_tensors(regional_fully_unpacked_annotated, collapse_variants=collapse_variants, re_order=FALSE)
         dat_tensor <- regional_tensors_env[["input"]]
         af_tensor <- regional_tensors_env[["output"]]
         rm(regional_tensors_env)
-        dat_tensor[1,,,]
-        sum(af_tensor== 0)/prod(dim(af_tensor))
-        sum(rowSums(af_tensor)== 0)/nrow(af_tensor)
+        # dat_tensor[1,,,]; sum(af_tensor== 0)/prod(dim(af_tensor)); sum(rowSums(af_tensor)== 0)/nrow(af_tensor)
         saveRDS(dat_tensor, output_path(paste0(dat_name,"_tensor2.rds")))
         saveRDS(af_tensor, filename)
         tasks_done = tasks_done + 1
@@ -939,6 +949,45 @@ split_gradcams <- function(full_dat_name, indices_groups) {
 #################################################################################################################
 # MAIN: FUNCTIONS TO SETUP SUPERMODEL DATA TENSORS WITH A GIVEN NAME
 #################################################################################################################
+
+# Turn a regional type of tensor into four different tensors representing each variant-specific possibility for vSUPRNOVA.
+# convert_tensor_to_variant_forms(paste0(c("transcribed100k_"),1:4))
+convert_tensor_to_variant_forms <- function(dat_names, make_gradcams=TRUE) {
+    alts <- c("A","C","G","T")
+    for(dat_name in dat_names) {
+        print(dat_name)
+        ref_tensor_filename = output_path(paste0(dat_name,"_tensor.rds"))
+        ref_tensor <- readRDS(ref_tensor_filename)
+        for(alt_i in 1:4) {
+            alt <- alts[alt_i]; print(alt)
+            alt_tensor <- ref_tensor
+            alt_tensor[,ceiling(ncol(alt_tensor)/2),alt_i,1] <- 1; alt_tensor[,ceiling(ncol(alt_tensor)/2),-c(alt_i),1] <- 0
+            alt_tensor_filename = gsub("_tensor.rds$", paste0("_",alt,"_tensor.rds"), ref_tensor_filename)
+            saveRDS(alt_tensor, alt_tensor_filename)
+        }
+    }
+    
+    if(make_gradcams) {
+        dat_names <- c(sapply(dat_names, FUN=function(x) paste0(x,"_",alts)))
+        for(dat_name in dat_names) {
+            dat_gradcams_filename = output_path(paste0(dat_name,"_gradcams.rds"))
+            if(file.exists(dat_gradcams_filename)) { next }
+            
+            dat_gradcams_folder= output_path(paste0(dat_name,"_gradcams"))
+            print(paste0("Calculating GradCAMS for ",dat_gradcams_folder," folder..."))
+            dat_tensor_filename = output_path(paste0(dat_name,"_tensor.rds"))
+            dat_tensor <- readRDS(dat_tensor_filename)
+            calculate_gradcams(dat_tensor[,,,], dat_gradcams_folder, k_reset_freq=3)
+            gc()
+            
+            dat_gradcams <- get_gradcams(dat_gradcams_folder)
+            saveRDS(dat_gradcams, dat_gradcams_filename)
+            dat_gradcams <- array_reshape(dat_gradcams, c(dim(dat_gradcams),1))
+            dat_gradcams[is.na(dat_gradcams)] <- 0
+            saveRDS(dat_gradcams, dat_gradcams_filename)
+        }
+    }
+}
 
 # Setup and save all data tensors for SUPRNOVA under the given name. 
 # Run this function multiple times (with specified number of tasks to complete) to ensure that all setup is complete; this is designed to manage RAM for large datasets.
