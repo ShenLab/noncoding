@@ -116,7 +116,7 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     }) (c(rbp_disruption_module_output))
     
     # Add nearest gene and epigenomic features to the neural network, which are combined with gene damagingness d to make s!
-    num_tissues = 10
+    num_tissues = 7
     # Auxiliary input for gene expression
     gene_expression_module <- layer_input(name="gene_expression", shape = c(num_tissues)) 
     gene_expression_module_activation <- gene_expression_module %>% layer_dense(1, name="gene_expression_activation", activation="sigmoid")
@@ -124,13 +124,13 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     gene_constraint_module <- layer_input(name="gene_constraint", shape = c(1))
     gene_constraint_module_activation <- gene_constraint_module %>% layer_dense(1, name="gene_constraint_activation", activation="sigmoid", use_bias=FALSE) #%>%
     # Auxiliary input for histone/epigenomic marks annotation
-    epigenomic_module <- layer_input(name="epigenomic_marks", shape = c(num_tissues,adjusted_gene_damagingness_layer$shape[[2]]))
+    epigenomic_module <- layer_input(name="epigenomic_marks", shape = c(num_tissues,1)) #adjusted_gene_damagingness_layer$shape[[2]]))
     epigenomic_module_activation <- epigenomic_module %>% layer_dense(1, name="epigenomic_site_aggregate", activation="sigmoid", use_bias=FALSE) %>%
         layer_flatten() %>% layer_dense(1, name="epigenomic_activation", activation="sigmoid", use_bias=FALSE) 
     
     # Learning of selection coefficient using RBP gene regulation disruption output and gene-level features.
     # layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% # %>% #gene_damagingness_stack_layer %>% 
-    selection_coef_layer <- layer_multiply(c(adjusted_gene_damagingness_layer, gene_constraint_module_activation)) %>%
+    selection_coef_layer <- layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% #layer_multiply(c(adjusted_gene_damagingness_layer, gene_constraint_module_activation)) %>%
         layer_reshape(c(adjusted_gene_damagingness_layer$shape[[2]],1)) %>%
         layer_dense(5, name="dense1", activation="sigmoid", use_bias=FALSE) %>%
         layer_dense(3, name="dense2", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
@@ -169,7 +169,8 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     }) (c(y_true_module, background_mut_rate_module, adjusted_selection_coef_layer))
     
     # Define model with keras functional API
-    model <- keras_model(inputs=c(rbp_binding_input, gene_constraint_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
+    #model <- keras_model(inputs=c(rbp_binding_input, gene_constraint_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
+    model <- keras_model(inputs=c(rbp_binding_input, gene_expression_module, gene_constraint_module, epigenomic_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
     
     # Custom loss function, that can optionally take in a mask arg and additional extra args.
     custom_loss_function <- function(extra_args=NULL, mask=-1) {
@@ -185,7 +186,7 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
         return(loss_function)
     }
     opt <- optimizer_adam(lr=0.01) # optimizer_rmsprop(lr=0.01)
-    model %>% compile(loss=custom_loss_function(), optimizer=opt, metrics="mae")
+    model %>% compile(loss=custom_loss_function(), optimizer=opt) #, metrics="mae")
     
     model_name = "supermodel"
     # plot_model(model, to_file = output_path(paste0("images/",model_name,".png")), show_shapes = TRUE, show_layer_names = TRUE)
