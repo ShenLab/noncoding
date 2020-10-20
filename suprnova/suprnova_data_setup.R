@@ -35,6 +35,8 @@ BIGDATA_FOLDER <- "/mnt/data/ak3792"
 # Path to output folder, allowing simpler writing of output with the alex_suite.R output_path function.
 OUTPUT_FOLDER <- "/home/ak3792/Research/ML/output"
 
+# Update parameters to match requirements for the current machine.
+update_os()
 #################################################################################################################
 # FUNCTIONS TO TRANSFORM BETWEEN GENOMIC SEQUENCES AND THEIR HOT-ENCODED TENSOR REPRESENTATION
 #################################################################################################################
@@ -153,7 +155,6 @@ unpack_muts <- function(dat, all_alts=TRUE, remove_N_bases=TRUE) {
 }
 
 # Groups sequences from unpacked ANNOVAR annotation into tensor objects
-dat <- readRDS(output_path("transcribed100k_1_fully_unpacked_annotated.rds")); collapse_variants=FALSE; re_order=FALSE
 group_seqs_into_tensors <- function(dat, collapse_variants=TRUE, re_order=TRUE) {
     if(re_order) {
         if("seq" %in% colnames(dat)) { dat <- dat[order(dat$seq, dat$Chrom, dat$Position),]
@@ -706,7 +707,7 @@ annotate <- function(variants, features, features_env=NULL, variants_granges=NUL
 # Setup allele frequency-annotated data for SUPRNOVA under the given name. 
 # The function currently assumes that data is in hg38 but has a Position_hg19 column; typically, run setup_supermodel_data() function before this one.
 # Run this function multiple times (with specified number of tasks to complete) to ensure that all setup is complete; this is designed to manage RAM for large datasets.
-annotate_AFs <- function(dat_name, dat=NULL, version="hg38", type="r", num_tasks_to_do=1, rewrite=FALSE) {
+annotate_AFs <- function(dat_name, dat=NULL, version="hg38", type="v", num_tasks_to_do=1, rewrite=FALSE) {
     tasks_done = 0
     filename = output_path(paste0(dat_name,"_fully_unpacked.rds"))
     if(tasks_done < num_tasks_to_do && (!file.exists(filename) || rewrite)) {
@@ -951,7 +952,9 @@ split_gradcams <- function(full_dat_name, indices_groups) {
 #################################################################################################################
 
 # Turn a regional type of tensor into four different tensors representing each variant-specific possibility for vSUPRNOVA.
-# convert_tensor_to_variant_forms(paste0(c("transcribed100k_"),1:4))
+# convert_tensor_to_variant_forms(paste0(c("transcribed100k_"),4))
+# convert_tensor_to_variant_forms(rev(paste0(c("transcribed100k_"),2:3)))
+# convert_tensor_to_variant_forms(paste0(c("asd"),c("",1:3)))
 convert_tensor_to_variant_forms <- function(dat_names, make_gradcams=TRUE) {
     alts <- c("A","C","G","T")
     for(dat_name in dat_names) {

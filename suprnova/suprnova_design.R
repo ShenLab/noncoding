@@ -8,10 +8,10 @@ library(pbapply)
 library(EBImage)
 library(rhdf5)
 library(gtools)
-library("PWMEnrich")
+#library("PWMEnrich")
 library("TFBSTools")
-library("seqLogo")
-library("msa")
+#library("seqLogo")
+#library("msa")
 library("ComplexHeatmap")
 library("abind")
 library("hexbin")
@@ -52,9 +52,9 @@ save_supermodel <- function(model, model_name) {
 }
 
 # Loads the model with the given model name; because of custom architecture, this requires first re-defining the architecture in keras and then loading in the saved weights.
-load_supermodel <- function(model_name) {
+load_supermodel <- function(model_name, type="v", L=15, num_rbps=160, num_filters=5, rbp_kernel_width=4, sequence_kernel_width=6, s_anchor=2e-6, s_scaling_factor=-1) {
     filename = output_path(paste0(model_name,"_weights.hdf5"))
-    model <- define_supermodel_architecture() # HAVE TO FIGURE OUT A WAY TO SAVE THE TRANSFER THE PARAMETERS AS WELL AND LOAD THEM FIRST!
+    model <- define_supermodel_architecture(type, L, num_rbps, num_filters, rbp_kernel_width, sequence_kernel_width, s_anchor, s_scaling_factor) # HAVE TO FIGURE OUT A WAY TO SAVE THE TRANSFER THE PARAMETERS AS WELL AND LOAD THEM FIRST!
     model <- load_model_weights_hdf5(model, filename)
     return(model)
 }
@@ -63,35 +63,156 @@ load_supermodel <- function(model_name) {
 # Define the super-model architecture, given the parameters. 
 # Type can be "r"/"regional" or "v"/"variant" for rSUPRNOVA and vSUPRNOVA, respectively.
 #################################################################################################################
-# type="v"; L=25; num_rbps=160; num_filters=30; rbp_kernel_width=4; sequence_kernel_width=6; s_scaling_factor=-1
-define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_filters=30, rbp_kernel_width=4, sequence_kernel_width=6, s_scaling_factor=1) {
+# type="v"; L=15; num_rbps=160; num_filters=5; rbp_kernel_width=4; sequence_kernel_width=6; s_scaling_factor=-1
+define_supermodel_architecture <- function(type="v", L=15, num_rbps=160, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=3, s_anchor=2e-6, s_scaling_factor=-1, custom_conv1=FALSE) {
     preserve_variants = (type == "v" || type == "variant")
-    # Define the shape of the RBP GradCAM tensor input to the neural network.
-    rbp_binding_input <- layer_input(name="rbp_binding_input", shape = c(L,num_rbps,1+3*(preserve_variants)))
     if(preserve_variants) {
-        # First convolution layer
-        conv1 <- layer_conv_3d(name="conv1", filters=num_filters, kernel_size=c(sequence_kernel_width,rbp_kernel_width,1), strides=c(1,rbp_kernel_width-2,1), padding="valid", use_bias=FALSE, activation="relu")
-        # Second convolution layer
-        conv2 <- layer_conv_3d(name="conv2", filters=num_filters, kernel_size=c(sequence_kernel_width,rbp_kernel_width,1), strides=c(1,rbp_kernel_width-2,1), padding="valid", use_bias=FALSE, activation="relu")
-    
+        # Define the shape of the RBP alt-ref GradCAM tensor input to the neural network.
+        delta_binding_input <- layer_input(name="delta_binding_input", shape = c(L,num_rbps,4))
+        # Define the shape of the RBP GradCAM tensor input to the neural network.
+        rbp_binding_input <- layer_input(name="rbp_binding_input", shape = c(L,num_rbps,1))
+        # alt-ref convolution layer
+        #w <- model$get_layer("conv_alt_ref")$weights[[1]][1,1,1,,]
+        conv_altref_constraint <- function(w) { k_minimum(k_maximum(w, -1), 1) }
+        conv_altref <- layer_conv_3d(name="conv_alt_ref", filters=1, kernel_size=c(1,1,1), strides=c(1,1,1), padding="valid", use_bias=FALSE) #kernel_constraint=conv_altref_constraint
+        # Custom conv1 filter weights, to account for every RBP complex possibility
+        if(custom_conv1) {
+            row_weights <- expand.grid(lapply(1:rbp_kernel_width, function(i) c(0,1)))
+            row_weights_combs <- expand.grid(lapply(1:sequence_kernel_width, function(i) 1:nrow(row_weights)))
+            conv1_filters <- abind(lapply(1:nrow(row_weights_combs), function(i) { f <- as.matrix(row_weights[unlist(row_weights_combs[i,]),]); colnames(f) <- gsub("Var","RBP",colnames(f)); return(f) }), along=3)
+            num_filters = dim(conv1_filters)[3]
+            midpoint_RBP <- ceiling(rbp_kernel_width / 2)
+            midpoint_seq <- ceiling(sequence_kernel_width / 2)
+            conv1_filters <- conv1_filters[,,unlist(lapply(1:num_filters, function(i) { # 25 filters excluded when filters are 3x3 dimension
+                f <- conv1_filters[,,i,drop=FALSE]; rbp_inv <- colSums(f); seq_inv <- rowSums(f)
+                return(sum(!unlist(lapply(list(rbp_inv, seq_inv), function(x) {
+                    midpoint = ceiling(length(x)/2)
+                    return(x[midpoint] > 0 | ((sum(x[1:(midpoint-1)]) > 0) & (sum(x[(midpoint+1):rbp_kernel_width]) > 0)))
+                }))) == 0)
+            })),drop=FALSE]; conv1_filters <- conv1_filters[,,order(apply(conv1_filters, 3, sum)),drop=FALSE]
+            num_filters = dim(conv1_filters)[3]
+            conv1_filters <- k_cast(conv1_filters[,,1:num_filters,drop=FALSE], dtype="float32")
+            my_filter <- function(shape=c(sequence_kernel_width,rbp_kernel_width,1,1,num_filters), dtype=NULL) { k_reshape(conv1_filters, shape) }
+            # First convolution layer
+            conv1 <- layer_conv_3d(name="rbp_complex_activation", filters=num_filters, kernel_size=c(1,sequence_kernel_width,rbp_kernel_width), strides=c(1,1,rbp_kernel_width-2), padding="same", use_bias=FALSE,
+                                   kernel_initializer=my_filter, trainable=FALSE, activation="tanh")
+        } else {
+            # First convolution layer
+            conv1 <- layer_conv_3d(name="rbp_complex_activation", filters=num_filters, kernel_size=c(1,sequence_kernel_width,rbp_kernel_width), strides=c(1,1,rbp_kernel_width-2), padding="same", use_bias=FALSE, activation="tanh")
+        }
+        #gradcam_reformat_layer <- layer_lambda(name="gradcam_reformat", f = function(inputs) {
+        #    delta_gradcams <- inputs[[1]]; ref_gradcams <- inputs[[2]]
+        #    return(k_stack(list(delta_gradcams, ref_gradcams), axis=5))
+        #}) (c(delta_binding_input, rbp_binding_activation))
+        
+        #scaling_layer_function <- function(inputs) {}
+        #scaling_layer <- layer_lambda(name="s", f = function(inputs) {
+        #    s <- inputs[[1]]; #s <- s_constraint(s)
+        #    s <- k_exp(s * s_scaling_factor + s_anchor)
+        #    return(s)
+        #}) (c(selection_coef_layer))
+        
+        # Custom Keras layer to weight the final dimension of the input by trainable weightings.
+        # If the act parameter is set to "threshold", a compressed sigmoid is done around the kernel to push all weights towards 0 or 1.  
+        TrainableWeightingLayer <- R6::R6Class("CustomLayer",      
+            inherit = KerasLayer,
+            public = list(
+                output_dim = NULL,
+                kernel = NULL,
+                threshold = NULL,
+                ndims = 2,
+                along = 0,
+                anchor = 0.5,
+                initialize = function(threshold, along, anchor, ndims) { self$ndims <- ndims; self$threshold <- threshold; self$along <- along; self$anchor <- anchor }, #self$output_dim <- output_dim
+                build = function(input_shape) {
+                    self$ndims <- length(input_shape)
+                    if(self$along < 1 || self$along > self$ndims) { self$along <- self$ndims }
+                    self$kernel <- self$add_weight(
+                        name = "kernel",
+                        shape = lapply(2:self$ndims, function(i) { if(i == self$along) { return(input_shape[[i]]) } else { return(k_cast(1,dtype="int32")) }}),
+                        #shape = list(input_shape[[self$along]]), #list(input_shape[[2]], self$output_dim),
+                        #initializer = initializer_truncated_normal(mean=self$anchor, stddev=(1-self$anchor)/2)
+                        initializer = initializer_truncated_normal(mean=self$anchor, stddev=min(c(1-self$anchor, self$anchor))/2), # so that both 0 and 1 are 2 standard devs away and will be redrawn.
+                    )
+                },
+                call = function(x, mask = NULL) {
+                    if(is.null(self$threshold)) { return(x * self$kernel)
+                    } else {
+                        if(!is.numeric(self$threshold)) { self$threshold <- 5/(1-self$anchor) }
+                        return(k_sigmoid(self$threshold*(x - self$kernel)))
+                    }
+                },
+                compute_output_shape = function(input_shape) { input_shape }
+            )
+          )
+        ## define layer wrapper function
+        layer_weighting <- function(object, name = NULL, along=0, threshold=NULL, anchor=0.5, trainable=TRUE) {
+            create_layer(TrainableWeightingLayer, object, list(threshold=threshold, name=name, along=along, anchor=anchor, trainable=trainable, ndims=2))
+        }
+        #layer_weighting(name="delta_binding_activation")
+        #layer_custom <- function(object, output_dim, name = NULL, trainable = TRUE) { create_layer(CustomLayer, object, list(output_dim=as.integer(unlist(output_dim)), name = name, trainable = trainable)) }
+        #delta_binding_activation_layer <- layer_weighting(name="delta_binding_activation", anchor=0.4, along=2)
+        #delta_binding_activation <- abs(w) %>% delta_binding_activation_layer
+        #delta_binding_activation
+        #mean(as.matrix(delta_binding_activation)); sd(as.matrix(delta_binding_activation))
+        #delta_binding_activation_layer$weights
+        #delta_binding_activation_layer <- layer_weighting(name="delta_binding_activation", threshold=TRUE)
+        #delta_binding_activation <- abs(w) %>% delta_binding_activation_layer
+        #delta_binding_activation
+        #mean(as.matrix(delta_binding_activation)); sd(as.matrix(delta_binding_activation))
+        #delta_binding_activation_layer$weights
+        #delta_binding_activation_layer <- layer_weighting(name="delta_binding_activation", threshold=100)
+        #delta_binding_activation <- abs(w) %>% delta_binding_activation_layer
+        #delta_binding_activation
+        #mean(as.matrix(delta_binding_activation)); sd(as.matrix(delta_binding_activation))
+        #delta_binding_activation_layer$weights
+        #delta_binding_activation_layer$weights
+        #w
+        #delta_binding_activation
+        #delta_binding_activation_layer <- layer_weighting(name="delta_binding_activation", along=3, threshold=TRUE, anchor=0.75)
+        #delta_binding_activation <- delta_binding_input %>% delta_binding_activation_layer
+        #delta_binding_activation_layer$weights
+        
         # Module responsible for processing tensor with CNN and learning relevant RBP binding patterns.
-        rbp_disruption_module <- rbp_binding_input %>% layer_reshape(c(unlist(rbp_binding_input$shape[2:4]),1)) %>%
-            conv1 %>% layer_spatial_dropout_3d(0.2, name="dropout_weak1") %>% 
-            layer_max_pooling_3d(name="maxpool1", pool_size=c(1,2,1)) %>% conv2
-    
+        #conv_delta <- layer_conv_2d(name="conv_delta", filters=1, kernel_size=c(1,1), strides=c(1,1), padding="valid", activation="sigmoid", use_bias=FALSE) #kernel_constraint=conv_altref_constraint
+        #delta_binding_activation <- delta_binding_input %>% layer_permute(c(1,3,2)) %>% conv_delta %>% layer_permute(name="delta_binding_activation",c(1,3,2))
+        #conv_rbp_binding <- layer_conv_2d(name="conv_ref_binding", filters=1, kernel_size=c(1,1), strides=c(1,1), padding="valid", activation="sigmoid", use_bias=FALSE) 
+        rbp_activation_layer <- layer_weighting(name="rbp_binding_activation", along=3, threshold=TRUE, anchor=0.75)
+        delta_binding_activation <- delta_binding_input %>% rbp_activation_layer
+        rbp_binding_activation <- rbp_binding_input %>% rbp_activation_layer
+        rbp_disruption_module <- layer_subtract(c(delta_binding_activation, rbp_binding_activation), name="altref_binding_changes") %>%
+            layer_reshape(c(unlist(delta_binding_input$shape[c(4,2,3)]),1)) %>% #c(prod(unlist(rbp_binding_input$shape[2:3])),unlist(rbp_binding_input$shape[4:5]))) %>%
+            #layer_dense(1, name="rbp_binding_dense", activation="linear", use_bias=FALSE) %>% #conv_alt_ref %>% layer_dense
+            #layer_reshape(c(unlist(rbp_binding_input$shape[2:4]),1)) %>%      kernel_constraint=constraint_nonneg()
+            conv1 %>% layer_spatial_dropout_3d(0.2, name="dropout_weak1")
+            
+        # Select the middle site; prior to this a conv kernel across positions can be done to pool nearby site information, but from now on we focus only on central one.
+        site_select_layer <- layer_lambda(name="central_site_select", f = function(inputs) {
+            x <- inputs[[1]][,,ceiling(L/2),,]
+            return(x %>% layer_reshape(c(x$shape[[2]],prod(unlist(x$shape[3:4])))))
+        }) (c(rbp_disruption_module))
+        
+        #layer_reshape(c(unlist(rbp_disruption_module$shape[2:3]),prod(unlist(rbp_disruption_module$shape[4:5])))) %>%
+        #layer_max_pooling_3d(name="maxpool1", pool_size=c(1,2,1)) %>% conv2
+        
+        # Second convolution layer
+        #conv2 <- layer_conv_3d(name="conv2", filters=num_filters, kernel_size=c(1,1,rbp_kernel_width), strides=c(1,1,rbp_kernel_width-2), padding="same", use_bias=FALSE, activation="relu")                  
         # Pool together all RBP disruptions into one final aggregate RBP disruption representation.
-        rbp_disruption_module_output <- rbp_disruption_module %>% layer_permute(c(1,2,4,3)) %>% 
-            layer_max_pooling_3d(name="maxpool_final", pool_size=c(rbp_disruption_module$shape[[2]],rbp_disruption_module$shape[[3]],num_filters)) %>% 
-            layer_flatten(name="rbp_disruption_output") 
+        rbp_disruption_module_output <- site_select_layer %>% layer_dense(1, name="gene_regulatory_disruption", activation="sigmoid", use_bias=TRUE)
+            #layer_reshape(unlist(rbp_disruption_module$shape[2:4])) %>% layer_permute(c(1,3,2,4)) %>% 
+            #layer_max_pooling_3d(name="maxpool_final", pool_size=c(rbp_disruption_module$shape[[3]],rbp_disruption_module$shape[[2]],num_filters)) %>% 
+            #layer_flatten(name="rbp_disruption_output")
         
     } else {
+        # Define the shape of the RBP GradCAM tensor input to the neural network.
+        rbp_binding_input <- layer_input(name="rbp_binding_input", shape = c(L,num_rbps,1,1))
         # First convolution layer
-        conv1 <- layer_conv_2d(name="conv1", filters=num_filters, kernel_size=c(sequence_kernel_width,rbp_kernel_width), strides=c(1,rbp_kernel_width-2), padding="valid", use_bias=FALSE, activation="relu")
+        conv1 <- layer_conv_2d(name="rbp_complex_activation", filters=num_filters, kernel_size=c(sequence_kernel_width,rbp_kernel_width), strides=c(1,rbp_kernel_width-2), padding="valid", use_bias=FALSE, activation="relu")
         # Second convolution layer
         conv2 <- layer_conv_2d(name="conv2", filters=num_filters, kernel_size=c(sequence_kernel_width,rbp_kernel_width), strides=c(1,rbp_kernel_width-2), padding="valid", use_bias=FALSE, activation="relu")
     
         # Module responsible for processing tensor with CNN and learning relevant RBP binding patterns.
-        rbp_disruption_module <- rbp_binding_input %>%
+        rbp_disruption_module <- rbp_binding_input %>% layer_reshape(c(unlist(rbp_binding_input$shape[2:4]))) %>%
             conv1 %>% layer_spatial_dropout_2d(0.2, name="dropout_weak1") %>% 
             layer_max_pooling_2d(name="maxpool1", pool_size=c(1,2)) %>% conv2
         
@@ -102,18 +223,26 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
         # Upsample compressed RBP disruption encoding back up to the input sequence length, and outputs it as a flattened vector.
         rbp_disruption_module_output <- rbp_disruption_module_filters_pooled %>% 
             layer_reshape(c(rbp_disruption_module_filters_pooled$shape[[2]],1)) %>% layer_upsampling_1d(L) %>% 
-            layer_average_pooling_1d(rbp_disruption_module_filters_pooled$shape[[2]]) %>% 
-            layer_flatten(name="rbp_disruption_output")
+            layer_average_pooling_1d(rbp_disruption_module_filters_pooled$shape[[2]]) %>%
+            layer_flatten(name="gene_regulatory_disruption")
     }
     
     # Adjust gene damagingness layer to follow constraints on d.
     # Depending on how we want the representation of d to be constrained, we can adjust the following bounds:
-    d_lower_bound = -Inf; d_upper_bound = Inf
-    d_constraint <- function(w) { k_minimum(k_maximum(w, d_lower_bound), d_upper_bound) }
-    adjusted_gene_damagingness_layer <- layer_lambda(name="d", f = function(inputs) { 
-        d <- inputs[[1]]; #d <- d_constraint(d)
-        return(d)
-    }) (c(rbp_disruption_module_output))
+    #d_lower_bound = -Inf; d_upper_bound = Inf
+    #d_constraint <- function(w) { k_minimum(k_maximum(w, d_lower_bound), d_upper_bound) }
+    #adjusted_gene_damagingness_layer <- layer_lambda(name="d", f = function(inputs) {
+    #    d <- inputs[[1]]; #d <- d_constraint(d)
+    #    return(d)
+    #}) (c(rbp_disruption_module_output))
+
+    adjusted_gene_damagingness_layer <- rbp_disruption_module_output %>% layer_reshape(c(rbp_disruption_module_output$shape[[2]],1)) %>%
+        #layer_dense(1, name="d_dense1", activation="linear", use_bias=TRUE) %>%
+        #layer_dense(1, name="d_dense2", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="d_dense3", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="d_dense4", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="d_dense5", activation="sigmoid", use_bias=TRUE) %>%
+        layer_flatten(name="d")
     
     # Add nearest gene and epigenomic features to the neural network, which are combined with gene damagingness d to make s!
     num_tissues = 7
@@ -130,12 +259,20 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     
     # Learning of selection coefficient using RBP gene regulation disruption output and gene-level features.
     # layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% # %>% #gene_damagingness_stack_layer %>% 
-    selection_coef_layer <- layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% #layer_multiply(c(adjusted_gene_damagingness_layer, gene_constraint_module_activation)) %>%
+    selection_coef_layer <- #layer_multiply(c(adjusted_gene_damagingness_layer, gene_expression_module_activation, gene_constraint_module_activation, epigenomic_module_activation)) %>% 
+        layer_multiply(c(adjusted_gene_damagingness_layer, gene_constraint_module_activation)) %>%
         layer_reshape(c(adjusted_gene_damagingness_layer$shape[[2]],1)) %>%
-        layer_dense(5, name="dense1", activation="sigmoid", use_bias=FALSE) %>%
-        layer_dense(3, name="dense2", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
-        layer_dense(1, name="dense3", use_bias=FALSE) %>% layer_activation_leaky_relu(alpha=0.3) %>%
-        layer_dense(1, name="dense_final", use_bias=TRUE) %>%
+        layer_dense(1, name="dense1", activation="tanh", use_bias=TRUE) %>% #sigmoid
+        layer_dense(1, name="dense2", activation="tanh", use_bias=TRUE) %>% #layer_activation_leaky_relu(alpha=0.3) %>%
+        layer_dense(1, name="dense3", activation="tanh", use_bias=TRUE) %>% #layer_activation_leaky_relu(alpha=0.3) %>%
+        layer_dense(1, name="dense4", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense5", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense6", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense7", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense8", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense9", activation="tanh", use_bias=TRUE) %>%
+        #layer_dense(1, name="dense10", activation="tanh", use_bias=TRUE) %>%
+        layer_dense(1, name="dense_final", activation="tanh", use_bias=TRUE) %>%
         layer_flatten(name="selection_coef_output")
     
     # Adjust selection coefficient layer to follow constraints on s.
@@ -144,6 +281,7 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     s_constraint <- function(w) { k_minimum(k_maximum(w, s_lower_bound), s_upper_bound) }
     adjusted_selection_coef_layer <- layer_lambda(name="s", f = function(inputs) {
         s <- inputs[[1]]; #s <- s_constraint(s)
+        s <- k_exp(s * s_scaling_factor + s_anchor)
         return(s)
     }) (c(selection_coef_layer))
     
@@ -162,15 +300,15 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
     # Mean of NB will be pr/(1-p) = ( 1 * 4 * Ne * mu / (z+1) ) / ( z/(z+1) ) = sample_size * mu / s
     loss_layer <- layer_lambda(name="neg_log_probs", f = function(inputs) { 
         y_true <- inputs[[1]]; mu <- inputs[[2]]; s <- inputs[[3]]
-        z = 4 * Ne * k_exp(s * s_scaling_factor) / sample_size
+        z = 4 * Ne * s / sample_size
         r = 4 * Ne * mu
         neg_log_probs <- - ((y_true * sample_size) %>% (tfp$distributions$NegativeBinomial(total_count=r, probs=(1/(z+1)))$log_prob)) #y_true * sample_size
         return(neg_log_probs)
     }) (c(y_true_module, background_mut_rate_module, adjusted_selection_coef_layer))
     
     # Define model with keras functional API
-    #model <- keras_model(inputs=c(rbp_binding_input, gene_constraint_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
-    model <- keras_model(inputs=c(rbp_binding_input, gene_expression_module, gene_constraint_module, epigenomic_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
+    model <- keras_model(inputs=c(delta_binding_input, rbp_binding_input, gene_constraint_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
+    #model <- keras_model(inputs=c(rbp_binding_input, gene_expression_module, gene_constraint_module, epigenomic_module, background_mut_rate_module, y_true_module), outputs=c(loss_layer))
     
     # Custom loss function, that can optionally take in a mask arg and additional extra args.
     custom_loss_function <- function(extra_args=NULL, mask=-1) {
@@ -181,7 +319,7 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
             y_pred <- k_gather(k_flatten(y_pred), eligible_indices)
             # Calculate total logloss of all eligible sites taken together in this training iteration.
             sum_neg_log_probs <- k_mean(y_pred) # Use mean instead of sum to control for different number of eligible (mu available) sites
-            return(sum_neg_log_probs) # Can print the result out before this (during runtime) with k_print_tensor(sum_neg_log_probs)
+            return((sum_neg_log_probs-1)*100) # Can print the result out before this (during runtime) with k_print_tensor(sum_neg_log_probs)
         }
         return(loss_function)
     }
@@ -198,32 +336,44 @@ define_supermodel_architecture <- function(type="v", L=151, num_rbps=160, num_fi
 #################################################################################################################
 # Load all of the diffrent tensor objects (for the given named dataset), required for SUPRNOVA training.
 #################################################################################################################
-load_supermodel_training_data <- function(name="gnomad", type="v", remove_zero_expected=TRUE, remove_common_variants=FALSE) {
+load_supermodel_training_data <- function(name="gnomad", type="v", remove_zero_expected=TRUE, remove_common_variants=TRUE) {
     version="hg19"; set_global(version)
     # gnomAD sample size, used for converting allele count to allele frequency
     sample_size = 71702; set_global(sample_size)
     expected <- readRDS(output_path(paste0(name,"_expected.rds")))
     if(remove_zero_expected) { to_keep <- apply(expected, 1, function(x) sum(x==0) == 0) } else { to_keep <- rep(TRUE, nrow(expected)) }
-    #if(remove_common_variants) { to_keep <- apply(af_tensor, 1, function(x) sum(x==0) == 0) } else { to_keep <- rep(TRUE, nrow(expected)) }
     # Load all input and output tensors, which were calculated and saved in the previous section.
     if(type=="v") {
-        midpoint = ceiling(ncol(expected)/2); arm_width=12; site_indices <- (midpoint-arm_width):(midpoint+arm_width)
+        midpoint = ceiling(ncol(expected)/2); arm_width=7; site_indices <- (midpoint-arm_width):(midpoint+arm_width)
+        af_tensor <- readRDS(output_path(paste0(name,"_AFs_variant.rds")))[,midpoint,,drop=TRUE] * 2
+        if(remove_common_variants) { to_keep <- to_keep & apply(af_tensor, 1, function(x) (sum(x >= 1e-3) == 0 & sum(x < 0) == 1)) }
+        af_tensor <- af_tensor[to_keep,,drop=FALSE]
+        dat_cpg <- readRDS(output_path(paste0(name,"_cpg.rds")))[to_keep,,drop=FALSE]; set_global(dat_cpg)
+        
         expected <- expected[to_keep,rep(midpoint,4),drop=FALSE]
-        af_tensor <- readRDS(output_path(paste0(name,"_AFs_variant.rds")))[to_keep,midpoint,,drop=TRUE] * 2; set_global(af_tensor)
+        cpg_sites <- dat_cpg[,midpoint]
+        expected[cpg_sites,] <- expected[cpg_sites,] * c(1,1,1,10)/12
+        expected[!cpg_sites,] <- expected[!cpg_sites,]/3
+        dat_gradcams <- readRDS(output_path(paste0(name,"_gradcams.rds")))[to_keep,site_indices,,,drop=FALSE]
         dat_A_gradcams <- readRDS(output_path(paste0(name,"_A_gradcams.rds")))[to_keep,site_indices,,,drop=FALSE]
         dat_C_gradcams <- readRDS(output_path(paste0(name,"_C_gradcams.rds")))[to_keep,site_indices,,,drop=FALSE]
         dat_G_gradcams <- readRDS(output_path(paste0(name,"_G_gradcams.rds")))[to_keep,site_indices,,,drop=FALSE]
         dat_T_gradcams <- readRDS(output_path(paste0(name,"_T_gradcams.rds")))[to_keep,site_indices,,,drop=FALSE]
-        dat_gradcams <- abind(list(dat_A_gradcams, dat_C_gradcams, dat_G_gradcams, dat_T_gradcams), along=4); set_global(dat_gradcams)
+        #dat_gradcams <- abind(list(abind(list(dat_A_gradcams, dat_C_gradcams, dat_G_gradcams, dat_T_gradcams), along=4),
+        #                            abind(list(dat_gradcams, dat_gradcams, dat_gradcams, dat_gradcams), along=4)), along=5); set_global(dat_gradcams)
+        #dat_gradcams <- aperm(dat_gradcams, c(1,2,3,5,4))
+        altref_gradcams <- abind(lapply(list(dat_A_gradcams, dat_C_gradcams, dat_G_gradcams, dat_T_gradcams), function(alt_gradcams) {
+            return(alt_gradcams) # - dat_gradcams)
+        }), along=4); set_global(altref_gradcams)
     } else {
-        af_tensor <- readRDS(output_path(paste0(name,"_AFs.rds")))[to_keep,,drop=FALSE] * 2; set_global(af_tensor)
-        dat_gradcams <- readRDS(output_path(paste0(name,"_gradcams.rds")))[to_keep,,,,drop=FALSE]; set_global(dat_gradcams)
+        dat_gradcams <- abind(readRDS(output_path(paste0(name,"_gradcams.rds")))[to_keep,,,,drop=FALSE],5)
+        af_tensor <- readRDS(output_path(paste0(name,"_AFs.rds")))[to_keep,,drop=FALSE] * 2
+        dat_cpg <- readRDS(output_path(paste0(name,"_cpg.rds")))[to_keep,,drop=FALSE]; set_global(dat_cpg)
     }
-    set_global(expected)
+    set_global(af_tensor); set_global(dat_gradcams); set_global(expected)
     
     dat_trimers <- readRDS(output_path(paste0(name,"_trimers.rds")))[to_keep,,drop=FALSE]; set_global(dat_trimers)
     dat_region_types <- readRDS(output_path(paste0(name,"_region_types.rds")))[to_keep,,drop=FALSE]; set_global(dat_region_types)
-    #dat_cpg <- readRDS(output_path(paste0(name,"_cpg.rds")))[to_keep,,drop=FALSE]; set_global(dat_cpg)
     dat_pLIs <- readRDS(output_path(paste0(name,"_pLIs.rds")))[to_keep,,drop=FALSE]; set_global(dat_pLIs)
     dat_obs_exp <- readRDS(output_path(paste0(name,"_obs_exp.rds")))[to_keep,,drop=FALSE]; set_global(dat_obs_exp)
     width=ncol(dat_gradcams); set_global(width)
@@ -303,7 +453,9 @@ train_supermodel <- function(num_epochs=150, batch_size=128, rbp_order=1:160, fr
     allowed_indices = which(rowSums(expected)>0) # & rowSums(af_tensor)>0)
     randomized_order_training_indices = sample(allowed_indices, floor(fraction_for_training*length(allowed_indices)))
     test_indices = allowed_indices[!(allowed_indices %in% randomized_order_training_indices)]
-    history <- model %>% fit(list(dat_gradcams[randomized_order_training_indices,,rbp_order,,drop=FALSE], dat_obs_exp[randomized_order_training_indices,,drop=FALSE], expected[randomized_order_training_indices,,drop=FALSE], af_tensor[randomized_order_training_indices,,drop=FALSE]), list(af_tensor[randomized_order_training_indices,,drop=FALSE]), epochs=num_epochs, batch_size=batch_size, validation_split=0.2)
+    #history <- model %>% fit(list(dat_gradcams[randomized_order_training_indices,,rbp_order,,drop=FALSE], dat_obs_exp[randomized_order_training_indices,,drop=FALSE], expected[randomized_order_training_indices,,drop=FALSE], af_tensor[randomized_order_training_indices,,drop=FALSE]), list(af_tensor[randomized_order_training_indices,,drop=FALSE]), epochs=num_epochs, batch_size=batch_size, validation_split=0.2)
+    #history <- model %>% fit(list(dat_gradcams[randomized_order_training_indices,,rbp_order,,,drop=FALSE], dat_obs_exp[randomized_order_training_indices,,drop=FALSE], expected[randomized_order_training_indices,,drop=FALSE], af_tensor[randomized_order_training_indices,,drop=FALSE]), list(af_tensor[randomized_order_training_indices,,drop=FALSE]), epochs=num_epochs, batch_size=batch_size, validation_split=0.2)
+    history <- model %>% fit(list(altref_gradcams[randomized_order_training_indices,,rbp_order,,drop=FALSE], dat_gradcams[randomized_order_training_indices,,rbp_order,,drop=FALSE], dat_obs_exp[randomized_order_training_indices,,drop=FALSE], expected[randomized_order_training_indices,,drop=FALSE], af_tensor[randomized_order_training_indices,,drop=FALSE]), list(af_tensor[randomized_order_training_indices,,drop=FALSE]), epochs=num_epochs, batch_size=batch_size, validation_split=0.2)
     print(history$metrics$loss)
     print(history$metrics$val_loss)
     
