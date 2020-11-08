@@ -41,15 +41,16 @@ source("suprnova_design.R")
 if(file.exists(output_path("rbp_order.rds"))) { rbp_order <- readRDS(output_path("rbp_order.rds"))
 } else { rbp_order <- order_rbps(); saveRDS(rbp_order, output_path("rbp_order.rds")) }
 load_supermodel_training_data("transcribed100k_1"); dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
-s_anchor = log(mean((expected/af_tensor)[af_tensor > 0 & af_tensor < 1e-3]))
-s_upper_bound = 0.01
+source("suprnova_design.R")
+s_anchor = log(5e-5) #log(mean((expected/af_tensor)[af_tensor > 0 & af_tensor < 1e-3]))
+s_upper_bound = 0.005
 s_scaling_factor = (log(s_upper_bound) - s_anchor)
-cat(paste0("s = exp(s_model * s_scaling_factor + s_anchor)\ns_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3),"\n"),paste0("s_model = ",c(-1,0,1),"  ->  s = ",exp(c(-1,0,1) * s_scaling_factor + s_anchor),"\n"))
+cat(paste0("s = exp(s_model * s_scaling_factor + s_anchor)\ns_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3),"\n"),paste0("s_model = ",c(-1,0,1),"  ->  s = ",exp((c(-1,0,1)) * s_scaling_factor + s_anchor),"\n"))
 gc(); model <- define_supermodel_architecture(L=15, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=1, custom_conv1=TRUE, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor)
 model_layers <- lapply(model$layers, function(x) paste0("Output Dim: c(", gsub("[()]*","",gsub("list","",paste(gsub("NULL","N",x$get_output_shape_at(as.integer(0))),collapse=", "))),")"))
 names(model_layers) <- lapply(model$layers, function(x) x$name)
 model_layers[1:15]
-test_indices <- train_supermodel(num_epochs=30, batch_size=256, rbp_order=rbp_order, fraction_for_training=0.5); gc()
+training_results <- train_supermodel(num_epochs=50, batch_size=256, rbp_order=rbp_order, fraction_for_training=0.8)
 #maps_result <- plot_model_outputs(model, test_indices[rowSums(af_tensor)[test_indices]>0][1:100])
 #weighted_conv_altref <- unfactorize(data.frame(cbind(t(as.matrix(model$get_layer("conv_alt_ref")$weights[[1]][1,1,1,,])), as.matrix(model$get_layer("rbp_binding_dense")$weights[[1]])[,1])))
 #rownames(weighted_conv_altref) <- c(paste0("filter_",1:nrow(weighted_conv_altref))); colnames(weighted_conv_altref) <- c("Alt-Ref Delta", "Ref", "weight")
@@ -61,37 +62,68 @@ test_indices <- train_supermodel(num_epochs=30, batch_size=256, rbp_order=rbp_or
 dim(model$get_layer("rbp_binding_activation")$weights[[1]]); range(as.matrix(model$get_layer("rbp_binding_activation")$weights[[1]]))
 dim(model$get_layer("rbp_complex_activation")$weights[[1]]); range(as.matrix(model$get_layer("rbp_complex_activation")$weights[[1]]))
 dim(model$get_layer("gene_regulatory_disruption")$weights[[1]]); range(as.matrix(model$get_layer("gene_regulatory_disruption")$weights[[1]]))
+#model$get_layer("rbp_complex_impacts_adjust")$weights[[1]]
+#model$get_layer("gene_constraint_activation")$weights[[1]]
 
 #save_supermodel(model, "suprnova")
 #k_clear_session(); model <- load_supermodel("suprnova", L=15, num_filters=5, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor); gc()
-model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_activation", "central_site_select", "gene_regulatory_disruption", "d", "s"))
 #model_s <- get_activation_model(model, c("d", "s"))
-test_idx = 1:1000
-AFs_all <- af_tensor[test_idx,]; expected_all <- expected[test_idx,]
-#preds <- (model_s %>% predict(list(dat_gradcams[test_idx,,rbp_order,,,drop=FALSE], dat_obs_exp[test_idx,,drop=FALSE], expected[test_idx,,drop=FALSE], af_tensor[test_idx,,drop=FALSE])))
-preds <- (model_s %>% predict(list(altref_gradcams[test_idx,,rbp_order,,drop=FALSE], dat_gradcams[test_idx,,rbp_order,,drop=FALSE], dat_obs_exp[test_idx,,drop=FALSE], expected[test_idx,,drop=FALSE], af_tensor[test_idx,,drop=FALSE])))
-names(preds) <- model_s$output_names
-s_vals_all <- preds[["s"]]; s_vals_all[is.nan(s_vals_all)] <- 0
-range(preds[["selection_coef_output"]]); range(preds[["s"]])
-filename=output_path(paste0("model_distributions_s.pdf")); pdf(file=filename)
-plot(density(log10(s_vals_all)), lwd=2, col="blue", main="Selection Coef. Distribution in Test Data", xlab="log10(s)", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-dev.off(); pdf_to_png(filename)
-range(preds[["d"]])
-filename=output_path(paste0("model_distributions_d.pdf")); pdf(file=filename)
-plot(density(preds[["d"]]), lwd=2, col="blue", main="Gene Reg. Damagingness Distribution in Test Data", xlab="d", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-dev.off(); pdf_to_png(filename)
-range(preds[["rbp_binding_activation"]])
-filename=output_path(paste0("model_distributions_rbp_binding.pdf")); pdf(file=filename)
-plot(density(preds[["rbp_binding_activation"]]), lwd=2, col="blue", main="RBP Binding Activation in Test Data", xlab="rbp binding activation", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-mtext(paste0(round(100 * sum(preds[["rbp_binding_activation"]] > 0.5) / prod(dim(preds[["rbp_binding_activation"]])),2)," % of variants have binding activation > 0.5"), cex=1.1)
-dev.off(); pdf_to_png(filename)
-range(preds[["altref_binding_changes"]])
-filename=output_path(paste0("model_distributions_binding_change.pdf")); pdf(file=filename)
-plot(density(preds[["altref_binding_changes"]]), lwd=2, col="blue", main="Alt-Ref Binding Change in Test Data", xlab="alt-ref activated binding change", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-mtext(paste0(round(100 * sum(preds[["altref_binding_changes"]] > 0.25) / prod(dim(preds[["altref_binding_changes"]])),2)," % of variants have delta > 0.25 (LOF), ",
-             round(100 * sum(preds[["altref_binding_changes"]] < -0.25) / prod(dim(preds[["altref_binding_changes"]])),2)," % have < -0.25 (GOF)"), cex=1.1)
-dev.off(); pdf_to_png(filename) ###########################################
-################################ ALLOW CONV WEIGHTS TO BE NEGATIVE TOO, NOT JUST THE POSITIVE ONES!
+plot_model_distributions <- function(test_idx=NULL) {
+    if(is.null(test_idx)) { test_idx = 1:nrow(altref_gradcams) }; set_global(test_idx)
+    AFs_all <- af_tensor[test_idx,]; set_global(AFs_all)
+    expected_all <- expected[test_idx,]; set_global(expected_all)
+    model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_activation", "central_site_select", "gene_regulatory_disruption", "d", "selection_coef_output", "s"))
+    print("Finding model activations...")
+    gc(); preds <- model_predict(model_s, test_idx); set_global(preds)
+    s_vals_all <- preds[["s"]]; s_vals_all[is.nan(s_vals_all)] <- 0; set_global(s_vals_all)
+    
+    print("Plotting model distributions...")
+    filename=output_path(paste0("model_distributions_preds.pdf")); pdf(file=filename, width=10)
+    par(mfrow=c(2,3))
+    mtext_cex = 0.75
+    par_mar <- par()$mar; par(mar=par_mar+c(-1,0,0,0))
+    print(paste0("range(rbp binding activations) = c(",paste(range(preds[["rbp_binding_activation"]]),collapse=", "),")"))
+    #filename=output_path(paste0("model_distributions_rbp_binding.pdf")); pdf(file=filename)
+    plot(density(preds[["rbp_binding_activation"]]), lwd=1, col="blue", main="", xlab="RBP binding activation", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["rbp_binding_activation"]] > 0.5) / prod(dim(preds[["rbp_binding_activation"]])),2)," % of variants have binding activation > 0.5"), cex=mtext_cex, line=1)
+    #dev.off(); pdf_to_png(filename)
+    print(paste0("range(ref-alt binding changes) = c(",paste(range(preds[["altref_binding_changes"]]),collapse=", "),")"))
+    #filename=output_path(paste0("model_distributions_binding_change.pdf")); pdf(file=filename)
+    plot(density(preds[["altref_binding_changes"]]), lwd=1, col="blue", main="", xlab="ref-alt activated binding change", cex.main=1.8, cex.lab=1.4, cex.axis=1.4)
+    title("SUPRNOVA Prediction Distributions", line=3, cex=1.8)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["altref_binding_changes"]] > 0.25) / prod(dim(preds[["altref_binding_changes"]])),2)," % of variants have delta > 0.25 (LOF), "), cex=mtext_cex, line=1.5)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["altref_binding_changes"]] < -0.25) / prod(dim(preds[["altref_binding_changes"]])),2)," % have < -0.25 (GOF)"), cex=mtext_cex, line=0.5)
+    #dev.off(); pdf_to_png(filename)
+    print(paste0("range(rbp complex disruptions) = c(",paste(range(preds[["central_site_select"]]),collapse=", "),")"))
+    #filename=output_path(paste0("model_distributions_rbp_complexes.pdf")); pdf(file=filename)
+    plot(density(sample(preds[["central_site_select"]], 1000000, replace=TRUE)), lwd=1, col="blue", main="", xlab="RBP complex disruption", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["central_site_select"]] > 0.25) / prod(dim(preds[["central_site_select"]])),2)," % of complexes have delta > 0.25 (LOF), "), cex=mtext_cex, line=1.5)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["central_site_select"]] < -0.25) / prod(dim(preds[["central_site_select"]])),2)," % have < -0.25 (GOF)"), cex=mtext_cex, line=0.5)
+    #dev.off(); pdf_to_png(filename)
+    par(mar=par_mar+c(-0.25,0,-0.75,0))
+    print(paste0("range(d) = c(",paste(range(preds[["d"]]),collapse=", "),")"))
+    #filename=output_path(paste0("model_distributions_d.pdf")); pdf(file=filename)
+    plot(density(preds[["d"]]), lwd=1, col="blue", main="", xlab="gene reg. damagingness d", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["d"]] > 0.75) / prod(dim(preds[["d"]])),2)," % of variants have d > 0.75"), cex=mtext_cex, line=1)
+    #dev.off(); pdf_to_png(filename)
+    print(paste0("range(model_s) = c(",paste(range(preds[["selection_coef_output"]]),collapse=", ")))
+    #filename=output_path(paste0("model_distributions_s_coef.pdf")); pdf(file=filename)
+    plot(density(preds[["selection_coef_output"]]), lwd=1, col="blue", main="", xlab="in-model selection coef.", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0("s = exp(s_model * s_scaling_factor + s_anchor), "), cex=mtext_cex, line=1.5)
+    mtext(paste0("s_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3)), cex=mtext_cex, line=0.5)
+    #dev.off(); pdf_to_png(filename)
+    print(paste0("range(s) = c(",paste(range(preds[["s"]]),collapse=", "),"), mean(s) = ",mean(preds[["s"]])))
+    #filename=output_path(paste0("model_distributions_s.pdf")); pdf(file=filename)
+    plot(density(log10(s_vals_all)), lwd=1, col="blue", main="", xlab="log10(selection coef. s)", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0("mean(s) = ",mean(s_vals_all),", "), cex=mtext_cex, line=1.5)
+    mtext(paste0("mean(mu/AF) = ",mean((expected_all/AFs_all)[AFs_all > 0])), cex=mtext_cex, line=0.5)
+    #dev.off(); pdf_to_png(filename)
+    dev.off(); pdf_to_png(filename)
+    par(mar=par_mar)
+    par(mfrow=c(1,1))
+    return(0)
+}
+plot_model_distributions(test_idx=1:10000)
 
 rbp_binding_thresholds <- as.matrix(model$get_layer("rbp_binding_activation")$weights[[1]])[,1]; names(rbp_binding_thresholds) <- rbps[rbp_order]
 sort(rbp_binding_thresholds); mean(rbp_binding_thresholds); range(rbp_binding_thresholds)
@@ -133,25 +165,122 @@ rbp_complex_activations[8,4,order(abs(rbp_complex_activations[8,4,]))]
 ##################STOPPED HERE!!!###################
 dim(preds[["gene_regulatory_disruption"]]); range(preds[["gene_regulatory_disruption"]])
 
-# Test canonical splicing sites
+# Investigate relationship of region types vs variant score
+investigate_region_type_relationship <- function(region_types, scores, bucket_cuts=NULL, num_buckets=5, quant_start=0, quant_end=0.95, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, include_class_any=NULL, tilted_labels=TRUE, scientific_notation=FALSE, draw_legend=TRUE, legend_loc="topleft", legend_ncol=1, legend_cex=0.8, class_label_cex=0.65, class_label_x_offset = 0.5, srt=60, verbose=FALSE) {
+    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
+    if(is.null(include_class_any)) { include_class_any = normalize_counts }
+    if(is.null(bucket_cuts)) { quant_by=(quant_end-quant_start)/(num_buckets-1) ; bucket_cuts <- c(-Inf,round(quantile(scores, seq(quant_start+quant_by,quant_end,by=quant_by)),2)) }
+    if(is.null(dim(bucket_cuts))) { bucket_cuts <- rbind(bucket_cuts, rep(Inf,length(bucket_cuts))) }
+    #bucket_names <- c(paste0(bucket_cuts[1,]," < ",score_type," <= ",bucket_cuts[2,]))
+    bucket_names <- rep("",ncol(bucket_cuts))
+    b <- Reduce(cbind, lapply(1:ncol(bucket_cuts), function(bucket_i) {
+        if(verbose) { print(bucket_i) }
+        #if(s_i == 0) { curr_indices_backup <- s_vals_all == 0 } else if(s_i > ncol(s_bucket_cuts)) { curr_indices_backup <- rep(TRUE, length(s_vals_all)) } else {
+        lower_bound = bucket_cuts[1,bucket_i]; upper_bound = bucket_cuts[2,bucket_i]
+        if(upper_bound < Inf) { bucket_name <- paste0(lower_bound," < ",score_type," <= ",upper_bound)
+        } else { if(lower_bound > -Inf) { bucket_name <- paste0(score_type," > ",lower_bound) } else { bucket_name <- paste0(score_type," = any") } }
+        bucket_names[bucket_i] <<- bucket_name
+        curr_indices <- scores > lower_bound & scores <= upper_bound
+        return(colSums(region_types[curr_indices,]))
+    })); colnames(b) <- bucket_names
+    if(include_class_any) { b <- rbind(colSums(b), b); rownames(b)[1] <- "any class" }
+    b_counts <- b
+    #[,!grepl("= any",colnames(b_counts))]
+    region_variant_proportions <- rowSums(b_counts); region_variant_proportions <- region_variant_proportions / sum(region_variant_proportions)
+    if(normalize_counts || normalize_buckets) {
+        things_to_norm_by <- c()
+        if(normalize_buckets) { b <- apply(b, 2, function(x) x / sum(x)); things_to_norm_by <- c(things_to_norm_by, paste0(score_type," bucket")) }
+        if(normalize_counts) { b <- b / region_variant_proportions; things_to_norm_by <- c(things_to_norm_by, "class") }
+        things_to_norm_by <- rev(things_to_norm_by)
+        mtext_text = paste0("Normalization done by total variant count per ",paste(things_to_norm_by, collapse=" and ")); ylab_text = "Normalized Proportion"
+    } else { mtext_text = "No normalization performed"; ylab_text = "Proportion" }
+    #return(b)
+    if(tilted_labels) { b_backup <- b; colnames(b) <- NULL }
+    cols <- c(rep("gray",include_class_any), brewer.pal(nrow(b)-include_class_any, "Spectral"))
+    filename=paste0(output_path(paste0(score_type,"_region_type_comparison.pdf")))
+    if(normalize_counts) { filename <- gsub("\\.pdf$", "_normcounts.pdf", filename) }
+    if(normalize_buckets) { filename <- gsub("\\.pdf$", "_normbuckets.pdf", filename) }
+    pdf(filename)
+    par_mar <- par()$mar; par(mar=par_mar+c(0,1.5,0,0))
+    main_text = "Regional Class Distribution vs. "
+    if(score_type == "d") { main_text = paste0(main_text,"Gene Reg. Damagingness d")
+    } else if(score_type == "s") { main_text = paste0(main_text,"Selection Coef. s")
+    } else { main_text = paste0(main_text,score_type) }
+    barplot(b, beside=TRUE, space=c(0,1), las=2, ylim=c(0, max(b)*1.04), main=main_text, ylab="", col=cols) #, ylim = c(0,5 + max(mtcars$qsec)), xlab = "", space = 1)
+    title(ylab=ylab_text, mgp=c(4,1,0), cex.lab=1.2)
+    title(xlab=paste0(score_type," bucket"), mgp=c(3.15,1,0), cex.lab=1.3)
+    if(tilted_labels) {
+        class_label_starts = seq(nrow(b)/2 + class_label_x_offset, (nrow(b)+1)*ncol(b) + class_label_x_offset, by=nrow(b)+1)
+        text(class_label_starts, par("usr")[3]-(max(b)*0.05), srt=srt, adj=1, xpd=TRUE, labels=bucket_names, cex=class_label_cex)  #rotate 60 degrees (srt = 60)
+    }
+    mtext(mtext_text)
+    if(draw_legend) { legend(legend_loc, legend=c(rownames(b)), col=cols, ncol=legend_ncol, pch=15, cex=legend_cex) }
+    dev.off()
+    pdf_to_png(filename)
+    par(mar=par_mar)
+    if(tilted_labels) { b <- b_backup }
+    write.csv(b_counts, output_path(paste0(score_type,"_region_type_comparison_counts.csv")))
+    return(b)
+}
+
+# Investigate relationship of variant score densities vs. region types
+investigate_score_vs_region_type_relationship <- function(region_types, scores, score_type="d", righttail_threshold=NULL, righttail_quantile=0.5, logscale=NULL, include_class_any=FALSE, verbose=FALSE) {
+    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
+    cols <- c(rep("gray",include_class_any), brewer.pal(ncol(region_types), "Spectral"))
+    include_class_any=FALSE
+    verbose=FALSE
+    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
+    cols <- c(rep("gray",include_class_any), brewer.pal(ncol(region_types), "Spectral"))
+    righttail_quantile=0.5
+    logscale=NULL
+    if(is.null(logscale)) { logscale = score_type == "s" }
+    xlab_text = score_type; if(logscale) { xlab_text = paste0("log10(",xlab_text,")") }
+    main_text = "Regional Class Distribution vs. "
+    if(score_type == "d") { main_text = paste0(main_text,"Gene Reg. Damagingness d")
+    } else if(score_type == "s") { main_text = paste0(main_text,"Selection Coef. s")
+    } else { main_text = paste0(main_text,score_type) }
+    for(righttail in c(FALSE,TRUE)) {
+        filename=paste0(output_path(paste0(score_type,"_distributions_by_region_type.pdf")))
+        if(righttail) { if(is.null(righttail_threshold)) { righttail_threshold = quantile(scores_density$x,righttail_quantile) }; filename <- gsub("\\.pdf$", "_righttail.pdf", filename); mtext_text = paste0("Right tail of distributions only, ",score_type," > ",round(righttail_threshold,3))
+        } else { mtext_text = "Full distributions" }
+        pdf(filename)
+        plot_i_start = 1 - include_class_any; plot_indices <- plot_i_start:ncol(region_types); legend_text <- colnames(region_types)[plot_indices]
+        for(plot_i in plot_indices) {
+            if(verbose) { print(plot_i) }
+            if(plot_i == 0) { curr_indices <- rep(TRUE, nrow(region_types)); legend_text <- c("any class", legend_text)
+            } else { curr_indices <- which(region_types[,plot_i] == TRUE) }
+            scores_density <- density(scores[curr_indices], from=0)
+            if(plot_i == plot_i_start) {
+                domain = pmax(c(1.1*range(scores_density$x)),c(max(righttail*c(righttail_threshold,0)),0))
+                plot(scores_density, col=cols[plot_i+include_class_any], lwd=2, ylim=c(0,max(scores_density$y[scores_density$x > domain[1] & scores_density$x < domain[2]])*1.1), xlim=domain, xaxs="i", main=paste0("Distributions of ",gsub("^.*vs\\. ", "", main_text)," by Region Class"), xlab=xlab_text, cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+            } else { lines(scores_density, col=cols[plot_i+include_class_any], lwd=2) }
+        }
+        mtext(mtext_text, cex=1.2)
+        legend("topright", legend=legend_text, col=cols, ncol=1, pch=15, cex=1.2)
+        dev.off()
+        pdf_to_png(filename)
+    }
+}
+
+# Test canonical splicing sites and region types
 if(file.exists(output_path("rbp_order.rds"))) { rbp_order <- readRDS(output_path("rbp_order.rds"))
 } else { rbp_order <- order_rbps(); saveRDS(rbp_order, output_path("rbp_order.rds")) }
 s_anchor = -8.365
 s_upper_bound = 0.01
 s_scaling_factor = (log(s_upper_bound) - s_anchor)
 cat(paste0("s = exp(s_model * s_scaling_factor + s_anchor)\ns_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3),"\n"),paste0("s_model = ",c(-1,0,1),"  ->  s = ",exp(c(-1,0,1) * s_scaling_factor + s_anchor),"\n"))
-model <- load_supermodel("suprnova", L=15, num_filters=5, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor); gc()
+model <- load_supermodel("suprnova", L=15, num_filters=5, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor, custom_conv1=TRUE); gc()
 model_s <- get_activation_model(model, c("d","s")); gc()
 AFs_all <- array(0,dim=c(0,4)); expected_all <- array(0,dim=c(0,4)); s_vals_all <- array(0,dim=c(0,4)); d_all <- array(0,dim=c(0,4)); region_types_all <- array(0,dim=c(0,8))
-for(dat_name in paste0("transcribed100k_",1:2)) {
+dat_name = "transcribed100k_4"
+for(dat_name in paste0("transcribed100k_",c(1,2))) {
     print(dat_name)
     load_supermodel_training_data(dat_name); dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
     refgene <- run_annovar(dat, "refGene", "hg38")
     is_canonical_splicing <- which(refgene$Func.refGene == "splicing")
     test_idx = c(is_canonical_splicing,1:7500)
-    preds <- (model_s %>% predict(list(dat_gradcams[test_idx,,rbp_order,,,drop=FALSE], dat_obs_exp[test_idx,,drop=FALSE], expected[test_idx,,drop=FALSE], af_tensor[test_idx,,drop=FALSE])))
-    names(preds) <- model_s$output_names
-    s_vals <- preds[["s"]]; s_vals[is.nan(s_vals_all)] <- 0
+    preds <- model_predict(model_s, test_idx)
+    s_vals <- preds[["s"]]; s_vals[which(is.nan(s_vals_all))] <- 0
     s_vals_all <- abind(s_vals_all, s_vals, along=1)
     canon_splice <- rep(FALSE, length(test_idx)); if(length(is_canonical_splicing) > 0) { canon_splice[1:length(is_canonical_splicing)] <- TRUE }
     region_types_all <- abind(region_types_all, cbind(dat_region_types[test_idx,],canon_splice), along=1)
@@ -245,7 +374,7 @@ round(cor((expected_all/s_vals_all)[AFs_all > 0 & AFs_all < 1e-3], AFs_all[AFs_a
 draw_plot(data.frame(x=log10(expected_all/s_vals_all)[AFs_all > 0 & AFs_all < 1e-3], y=log10(AFs_all)[AFs_all > 0 & AFs_all < 1e-3]), hex_density = 25, title="AF vs. mu/s", xlab="log10(mu/s)", ylab="log10(AF)", legend_text="# variants", linear_best_fit=TRUE, quadratic_best_fit=FALSE, filename="AF_vs_mu_over_s.pdf", cor_method="Spearman")
 
 
-s_cutoff = 0.0015
+s_cutoff = 0.002
 filename=output_path(paste0("model_distributions_test_set_s",s_cutoff,".pdf"))
 pdf(file=filename)
 AF_zero_value = 1e-6
@@ -334,7 +463,7 @@ test_indices2 <- train_supermodel(num_epochs=30, batch_size=256, rbp_order=rbp_o
 save_supermodel(model, "suprnova")
 maps_result <- plot_model_outputs(model, test_indices[rowSums(af_tensor)[test_indices]>0][1:100])
 
-suprnova <- load_supermodel("suprnova")
+suprnova <- load_supermodel("suprnova", L=15, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=1, custom_conv1=TRUE, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor)
 model <- get_activation_model(suprnova, "s")
 load_supermodel_training_data("transcribed100k_3")
 trimers_all <- paste0(unlist(dat_trimers[,76])); rm(dat_trimers)
@@ -351,7 +480,7 @@ plis <- c(plis, dat_pLIs[,1]); rm(dat_pLIs)
 AFs_all <- c(AFs_all, af_tensor[,76]); expected_all <- c(expected_all, expected[,76])
 s_vals_all <- c(s_vals_all, (model %>% predict(list(dat_gradcams[,,rbp_order,,drop=FALSE], dat_obs_exp[,,drop=FALSE], expected[,,drop=FALSE]*mu_scaling_factor, af_tensor[,,drop=FALSE])))[,76])
 s_vals_all[is.nan(s_vals_all)] <- 0
-s_vals_all <- exp(s_vals_all * s_scaling_factor)
+
 plot(density(log10(s_vals_all)))
 plot(density(expected_all / AFs_all))
 plot(log10(expected_all/s_vals_all)[AFs_all < 1e-3], log10(AFs_all)[AFs_all < 1e-3])
@@ -452,63 +581,6 @@ legend("topright", legend=c(rownames(b)), col=cols, pch=15, cex=0.75)
 dev.off()
 pdf_to_png(filename)
 
-# Investigate relationship of region types vs variant score
-investigate_region_type_relationship <- function(region_types, scores, bucket_cuts=NULL, num_buckets=5, quant_start=0, quant_end=0.95, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, include_class_any=NULL, tilted_labels=TRUE, scientific_notation=FALSE, draw_legend=TRUE, legend_loc="topleft", legend_ncol=1, legend_cex=0.8, class_label_cex=0.65, class_label_x_offset = 0.5, srt=60, verbose=FALSE) {
-    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
-    if(is.null(include_class_any)) { include_class_any = normalize_counts }
-    if(is.null(bucket_cuts)) { quant_by=(quant_end-quant_start)/(num_buckets-1) ; bucket_cuts <- c(-Inf,round(quantile(scores, seq(quant_start+quant_by,quant_end,by=quant_by)),2)) }
-    if(is.null(dim(bucket_cuts))) { bucket_cuts <- rbind(bucket_cuts, rep(Inf,length(bucket_cuts))) }
-    #bucket_names <- c(paste0(bucket_cuts[1,]," < ",score_type," <= ",bucket_cuts[2,]))
-    bucket_names <- rep("",ncol(bucket_cuts))
-    b <- Reduce(cbind, lapply(1:ncol(bucket_cuts), function(bucket_i) {
-        if(verbose) { print(bucket_i) }
-        #if(s_i == 0) { curr_indices_backup <- s_vals_all == 0 } else if(s_i > ncol(s_bucket_cuts)) { curr_indices_backup <- rep(TRUE, length(s_vals_all)) } else {
-        lower_bound = bucket_cuts[1,bucket_i]; upper_bound = bucket_cuts[2,bucket_i]
-        if(upper_bound < Inf) { bucket_name <- paste0(lower_bound," < ",score_type," <= ",upper_bound)
-        } else { if(lower_bound > -Inf) { bucket_name <- paste0(score_type," > ",lower_bound) } else { bucket_name <- paste0(score_type," = any") } }
-        bucket_names[bucket_i] <<- bucket_name
-        curr_indices <- scores > lower_bound & scores <= upper_bound
-        return(colSums(region_types[curr_indices,]))
-    })); colnames(b) <- bucket_names
-    if(include_class_any) { b <- rbind(colSums(b), b); rownames(b)[1] <- "any class" }
-    b_counts <- b
-    #[,!grepl("= any",colnames(b_counts))]
-    region_variant_proportions <- rowSums(b_counts); region_variant_proportions <- region_variant_proportions / sum(region_variant_proportions)
-    if(normalize_counts || normalize_buckets) {
-        things_to_norm_by <- c()
-        if(normalize_buckets) { b <- apply(b, 2, function(x) x / sum(x)); things_to_norm_by <- c(things_to_norm_by, paste0(score_type," bucket")) }
-        if(normalize_counts) { b <- b / region_variant_proportions; things_to_norm_by <- c(things_to_norm_by, "class") }
-        things_to_norm_by <- rev(things_to_norm_by)
-        mtext_text = paste0("Normalization done by total variant count per ",paste(things_to_norm_by, collapse=" and ")); ylab_text = "Normalized Proportion"
-    } else { mtext_text = "No normalization performed"; ylab_text = "Proportion" }
-    #return(b)
-    if(tilted_labels) { b_backup <- b; colnames(b) <- NULL }
-    cols <- c(rep("gray",include_class_any), brewer.pal(nrow(b)-include_class_any, "Spectral"))
-    filename=paste0(output_path(paste0(score_type,"_region_type_comparison.pdf")))
-    if(normalize_counts) { filename <- gsub("\\.pdf$", "_normcounts.pdf", filename) }
-    if(normalize_buckets) { filename <- gsub("\\.pdf$", "_normbuckets.pdf", filename) }
-    pdf(filename)
-    par_mar <- par()$mar; par(mar=par_mar+c(0,1.5,0,0))
-    main_text = "Regional Class Distribution vs. "
-    if(score_type == "d") { main_text = paste0(main_text,"Gene Reg. Damagingness d")
-    } else if(score_type == "s") { main_text = paste0(main_text,"Selection Coef. s")
-    } else { main_text = paste0(main_text,score_type) }
-    barplot(b, beside=TRUE, space=c(0,1), las=2, ylim=c(0, max(b)*1.04), main=main_text, ylab="", col=cols) #, ylim = c(0,5 + max(mtcars$qsec)), xlab = "", space = 1)
-    title(ylab=ylab_text, mgp=c(4,1,0), cex.lab=1.2)
-    title(xlab=paste0(score_type," bucket"), mgp=c(3.15,1,0), cex.lab=1.3)
-    if(tilted_labels) {
-        class_label_starts = seq(nrow(b)/2 + class_label_x_offset, (nrow(b)+1)*ncol(b) + class_label_x_offset, by=nrow(b)+1)
-        text(class_label_starts, par("usr")[3]-(max(b)*0.05), srt=srt, adj=1, xpd=TRUE, labels=bucket_names, cex=class_label_cex)  #rotate 60 degrees (srt = 60)
-    }
-    mtext(mtext_text)
-    if(draw_legend) { legend(legend_loc, legend=c(rownames(b)), col=cols, ncol=legend_ncol, pch=15, cex=legend_cex) }
-    dev.off()
-    pdf_to_png(filename)
-    par(mar=par_mar)
-    if(tilted_labels) { b <- b_backup }
-    write.csv(b_counts, output_path(paste0(score_type,"_region_type_comparison_counts.csv")))
-    return(b)
-}
 dat_region_types <- dat_region_types[,which(!(colnames(dat_region_types) %in% "intergenic"))]
 colnames(dat_region_types) <- c("CDS","5'UTR","3'UTR","5'ss","3'ss","intron")
 a <- investigate_region_type_relationship(dat_region_types[test_idx,], preds[["d"]], num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=FALSE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=1, scientific_notation=FALSE)
@@ -516,45 +588,6 @@ a <- investigate_region_type_relationship(dat_region_types[test_idx,], preds[["d
 a <- investigate_region_type_relationship(dat_region_types[test_idx,], preds[["d"]], num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=1, scientific_notation=FALSE)
 a <- investigate_region_type_relationship(dat_region_types[test_idx,], preds[["d"]], num_buckets=6, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=ceiling((ncol(dat_region_types)+1)/2), scientific_notation=FALSE)
 a
-
-# Investigate relationship of variant score densities vs. region types
-investigate_score_vs_region_type_relationship <- function(region_types, scores, score_type="d", righttail_threshold=NULL, righttail_quantile=0.5, logscale=NULL, include_class_any=FALSE, verbose=FALSE) {
-    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
-    cols <- c(rep("gray",include_class_any), brewer.pal(ncol(region_types), "Spectral"))
-    include_class_any=FALSE
-    verbose=FALSE
-    scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
-    cols <- c(rep("gray",include_class_any), brewer.pal(ncol(region_types), "Spectral"))
-    righttail_quantile=0.5
-    logscale=NULL
-    if(is.null(logscale)) { logscale = score_type == "s" }
-    xlab_text = score_type; if(logscale) { xlab_text = paste0("log10(",xlab_text,")") }
-    main_text = "Regional Class Distribution vs. "
-    if(score_type == "d") { main_text = paste0(main_text,"Gene Reg. Damagingness d")
-    } else if(score_type == "s") { main_text = paste0(main_text,"Selection Coef. s")
-    } else { main_text = paste0(main_text,score_type) }
-    for(righttail in c(FALSE,TRUE)) {
-        filename=paste0(output_path(paste0(score_type,"_distributions_by_region_type.pdf")))
-        if(righttail) { if(is.null(righttail_threshold)) { righttail_threshold = quantile(scores_density$x,righttail_quantile) }; filename <- gsub("\\.pdf$", "_righttail.pdf", filename); mtext_text = paste0("Right tail of distributions only, ",score_type," > ",round(righttail_threshold,3))
-        } else { mtext_text = "Full distributions" }
-        pdf(filename)
-        plot_i_start = 1 - include_class_any; plot_indices <- plot_i_start:ncol(region_types); legend_text <- colnames(region_types)[plot_indices]
-        for(plot_i in plot_indices) {
-            if(verbose) { print(plot_i) }
-            if(plot_i == 0) { curr_indices <- rep(TRUE, nrow(region_types)); legend_text <- c("any class", legend_text)
-            } else { curr_indices <- which(region_types[,plot_i] == TRUE) }
-            scores_density <- density(scores[curr_indices], from=0)
-            if(plot_i == plot_i_start) {
-                domain = pmax(c(1.1*range(scores_density$x)),c(max(righttail*c(righttail_threshold,0)),0))
-                plot(scores_density, col=cols[plot_i+include_class_any], lwd=2, ylim=c(0,max(scores_density$y[scores_density$x > domain[1] & scores_density$x < domain[2]])*1.1), xlim=domain, xaxs="i", main=paste0("Distributions of ",gsub("^.*vs\\. ", "", main_text)," by Region Class"), xlab=xlab_text, cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-            } else { lines(scores_density, col=cols[plot_i+include_class_any], lwd=2) }
-        }
-        mtext(mtext_text, cex=1.2)
-        legend("topright", legend=legend_text, col=cols, ncol=1, pch=15, cex=1.2)
-        dev.off()
-        pdf_to_png(filename)
-    }
-}
 investigate_score_vs_region_type_relationship(dat_region_types[test_idx,], preds[["d"]], score_type="d", righttail_quantile=0.5)
 
 refgene <- run_annovar(dat, "refGene", "hg38")
@@ -702,15 +735,42 @@ genes_shet <- a$s_het; names(genes_shet) <- a$gene_symbol
 genebody_hg19 <- read.csv(data_path("refGene\\refGene_hg19_genebody_fixed.bed"), sep="\t", stringsAsFactors=FALSE)
 genebody_granges_hg19 <- to_genomic_regions(genebody_hg19, chr_colname="chromosome", start_colname="tss", end_colname="tes", strand_colname="strand", label_colname="gene", order_coordinates=TRUE, remove_duplicate_labels=TRUE)
 
-nearest_genes_all <- Reduce(c,lapply(c("transcribed100k_3","transcribed100k_4"), function(name) {
+nearest_genes_all <- Reduce(c,lapply(paste0("transcribed100k_",1:4), function(name) {
+    print(name)
     dat_granges_hg19 <- readRDS(output_path(paste0(name,"_granges_hg19.rds")))
+    dat_nearest_genes <- names(genebody_granges_hg19)[nearest(dat_granges_hg19, genebody_granges_hg19)]
+    saveRDS(dat_nearest_genes, output_path(paste0(name,"_nearest_genes.rds")))
+    shet <- genes_shet[dat_nearest_genes]; shet[is.na(shet)] <- mean(genes_shet)
+    saveRDS(data.frame(shet), output_path(paste0(name,"_shet.rds")))
+    dat_eclip_overlaps <- find_eclip_overlaps(dat_granges_hg19)
+    saveRDS(data.frame(dat_eclip_overlaps), output_path(paste0(name,"_eclip_overlaps.rds")))
+    
+    
     expected <- readRDS(output_path(paste0(name,"_expected.rds")))
     to_keep <- apply(expected, 1, function(x) sum(x==0) == 0)
-    dat_granges_hg19 <- dat_granges_hg19[to_keep]
-    dat_nearest_genes <- names(genebody_granges_hg19)[nearest(dat_granges_hg19, genebody_granges_hg19)]
-    return(dat_nearest_genes)
+    return(dat_nearest_genes[to_keep])
 }))
 shet_all <- genes_shet[nearest_genes_all]; shet_all[is.na(shet_all)] <- mean(genes_shet)
+saveRDS(nearest_genes_all, output_path("transcribed100k_nearest_genes.rds"))
+saveRDS(shet_all, output_path("transcribed100k_shet.rds"))
+
+k_reset_freq = 20
+rbps <- get_features_by_group("RBP")
+for(name in paste0("transcribed100k_",1:4)) {
+    print(name)
+    dat_tensor <- readRDS(output_path(paste0(name,"_tensor.rds")))
+    
+    rbp_binding_scores <- Reduce(cbind, lapply(1:length(rbps), function(rbp_i) {
+        if(rbp_i %% k_reset_freq == 0) { k_clear_session(); gc() }
+        rbp = rbps[rbp_i]
+        print(paste0(rbp_i,". ",rbp))
+        model <- load_model_hdf5(paste0("../ML/output/old/",tolower(rbp),"_model2.h5"))
+        return(model %>% predict(dat_tensor[,,,1]))
+    }))
+    
+    saveRDS(rbp_binding_scores, output_path(paste0(name,"_binding_scores.rds")))
+}
+
 
 filename = output_path("shet_distribution.pdf")
 pdf(filename)
@@ -762,6 +822,21 @@ draw_plot(data.frame(y=log10(max_s_gene)[log10(max_s_gene) > -2.35], x=log10(she
 shet_gene[log10(max_s_gene) > -2.35]
 unique(nearest_genes_all)[log10(max_s_gene) > -2.35]
 
+name = paste0("transcribed100k_",1)
+dat <- readRDS(output_path(paste0(name,"_dat.rds")))
+dat_eclip_overlaps <- readRDS(output_path(paste0(name,"_eclip_overlaps.rds")))
+
+for(name in paste0("transcribed100k_",1:4)) {
+    print(name)
+    dat_sequences <- readRDS(output_path(paste0(name,"_dat.rds")))$ref_sequence  #[to_keep,site_indices,,,drop=FALSE]
+    dat_gradcams <- readRDS(output_path(paste0(name,"_gradcams.rds")))
+    rbp_binding_scores <- readRDS(output_path(paste0(name,"_binding_scores.rds")))
+    dat_eclip_overlaps <- readRDS(output_path(paste0(name,"_eclip_overlaps.rds")))
+    strong_binding_cutoff = 0.85
+    idx = which(apply(dat_eclip_overlaps, 1, function(x) { return(rbp_binding_scores[as.numeric(x[1]),which(rbps == x[3])]) }) > strong_binding_cutoff)
+    draw_gradcams(dat_sequences, dat_gradcams, rbp_binding_scores, labels=dat_eclip_overlaps$RBP[idx], eclip_peaks=lapply(idx, function(i) dat_eclip_overlaps[dat_eclip_overlaps$query == dat_eclip_overlaps$query[i] & dat_eclip_overlaps$RBP == dat_eclip_overlaps$RBP[i],4:5]), dat_name=name, sequence_indices_to_display=dat_eclip_overlaps$query[idx])
+}
+
 ##################################################################################################
 # Setup CHD/SSC data frames (data freeze in accepted Nature paper, with FreeBayes)
 chd_variant_dat <- read.csv(data_path("WGS/CHDFB/chdfb_sscfb_pcgc_final_variants.csv"))
@@ -785,43 +860,46 @@ setup_supermodel_data("chd", num_tasks_to_do=1)
 
 # Interpet s prediction results for WGS datasets
 analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=FALSE) {
+    to_keep_all <- c()
     s_vals_all <- abind(lapply(dat_names, function(dat_name) {
         print(paste0("Getting s predictions for ",dat_name))
-        dat <- readRDS(output_path(paste0(dat_name,"_dat.rds")))
-        #dat_granges_hg19 <- readRDS(output_path(paste0(dat_name,"_granges_hg19.rds")))
-        #if(is.null(case_indices)) { case_indices <- grepl(case_pat, dat$sample) }; control_indices <- !case_indices
-        #num_case_variants = sum(case_indices); num_control_variants = sum(control_indices)
         dat_s_preds_filename = output_path(paste0(dat_name,"_s_preds.rds"))
-        if(!rewrite && file.exists(dat_s_preds_filename)) {
+        if(!rewrite && file.exists(dat_s_preds_filename) && FALSE) {
             s_vals_all <- readRDS(dat_s_preds_filename)
         } else {
-            dat_gradcams <- readRDS(output_path(paste0(dat_name,"_gradcams.rds")))
-            dat_expected <- readRDS(output_path(paste0(dat_name,"_expected.rds")))
-            #dat_pLIs <- readRDS(output_path(paste0(dat_name,"_pLIs.rds")))
-            dat_obs_exp <- readRDS(output_path(paste0(dat_name,"_obs_exp.rds")))
-            dat_cpg <- readRDS(output_path(paste0(dat_name,"_cpg.rds")))
+            to_keep <- load_supermodel_training_data(dat_name); dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
+            #dat_gradcams <- readRDS(output_path(paste0(dat_name,"_gradcams.rds")))
+            #dat_expected <- readRDS(output_path(paste0(dat_name,"_expected.rds")))
+            ##dat_pLIs <- readRDS(output_path(paste0(dat_name,"_pLIs.rds")))
+            #dat_obs_exp <- readRDS(output_path(paste0(dat_name,"_obs_exp.rds")))
+            #dat_cpg <- readRDS(output_path(paste0(dat_name,"_cpg.rds")))
             activation_model <- get_activation_model(model, "s")
-            activations <- activation_model %>% predict(list(dat_gradcams[,,,,drop=FALSE], dat_obs_exp[,,drop=FALSE], dat_expected[,,drop=FALSE]*mu_scaling_factor, dat_expected[,,drop=FALSE]))
+            arm_width = floor(activation_model$input[[1]]$shape[[2]]/2)
+            midpoint = ceiling(ncol(dat_gradcams)/2)
+            activations <- activation_model %>% predict(list(altref_gradcams[,(midpoint-arm_width):(midpoint+arm_width),rbp_order,,drop=FALSE], dat_gradcams[,(midpoint-arm_width):(midpoint+arm_width),rbp_order,,drop=FALSE], dat_obs_exp[,,drop=FALSE], expected[,,drop=FALSE], expected[,,drop=FALSE]))
             if(class(activations) == "list") {
-                s_vals_all <- exp(s_scaling_factor*activations[[which(layers_to_investigate == "s")]])
+                s_vals_all <- activations[[which(layers_to_investigate == "s")]]
             } else { # activations is a matrix instead of a list, caused by having just a single entity in layers_to_investigate
-                s_vals_all <- exp(s_scaling_factor*activations)
+                s_vals_all <- activations
             }
             s_vals_all[s_vals_all == -Inf | s_vals_all == Inf] <- 0
+            bases <- 1:4; names(bases) <- c("A","C","G","T")
+            s_vals_all <- cbind(sapply(1:nrow(dat), function(i) s_vals_all[i,bases[paste0(dat$Alt[i])]]))
             saveRDS(s_vals_all, dat_s_preds_filename)
+            to_keep_all <<- c(to_keep_all, to_keep)
         }
         return(s_vals_all)
     }), along=1)
     dat_granges_hg19 <- suppressWarnings(Reduce(c, lapply(dat_names, function(dat_name) {
         print(paste0("Getting GRanges (hg19) for ",dat_name))
         return(readRDS(output_path(paste0(dat_name,"_granges_hg19.rds"))))
-    })))
+    })))[to_keep_all]
     case_indices <- Reduce(c, lapply(dat_names, function(dat_name) {
         print(paste0("Getting case indices for ",dat_name))
         dat <- readRDS(output_path(paste0(dat_name,"_dat.rds")))
         if(is.null(case_indices)) { case_indices <- grepl(case_pat, dat$sample) }
         return(case_indices)
-    }))
+    }))[to_keep_all]
     if(transcribed_only) {
         if(!exists("fetal_brain_transcribed") || is.null(fetal_brain_transcribed)) { 
             #store_roadmap_eid_names()
@@ -831,7 +909,7 @@ analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, c
             fetal_brain_transcribed <- intersect(fetal_brain_transcribed, fetal_brain_transcribed)
         }
         transcribed_indices <- unique(queryHits(findOverlaps(dat_granges_hg19, fetal_brain_transcribed)))
-        s_vals_all <- s_vals_all[transcribed_indices,]
+        s_vals_all <- s_vals_all[transcribed_indices,,drop=FALSE]
         dat_granges_hg19 <- dat_granges_hg19[transcribed_indices]
         case_indices <- case_indices[transcribed_indices]
         transcribed_mtext = " (transcribed in fetal brain)"
@@ -855,7 +933,7 @@ analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, c
     dev.off()
     pdf_to_png(filename)
     
-    cutoffs <- seq(min(s_vals_all[,reg_idx]), max(s_vals_all[,reg_idx]), by=0.0001)
+    cutoffs <- seq(sqrt(max(min(s_vals_all[control_indices,reg_idx]),min(s_vals_all[control_indices,reg_idx]))), sqrt(min(max(s_vals_all[control_indices,reg_idx]),max(s_vals_all[control_indices,reg_idx]))), by=0.0025)**2
     fet_results <- unfactorize(data.frame(t(data.frame(sapply(cutoffs, function(cutoff) {
         variant_counts <- c(sum(s_vals_all[case_indices,reg_idx]>=cutoff),sum(s_vals_all[control_indices,reg_idx]>=cutoff))
         fet_result <- fisher_exact_test(variant_counts[1], variant_counts[2], total_variant_counts[1], total_variant_counts[2], alternative=c("two.sided"))
@@ -931,9 +1009,17 @@ analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, c
 }
 #analyze_s_predictions("chd", case_pat="^case_")
 #model <- load_supermodel("suprnova")
-a <- analyze_s_predictions(c("asd","asd1","asd2","asd3"), case_pat="-p", cutoff=0.002, transcribed_only=TRUE, regional=FALSE)
-a <- analyze_s_predictions("chd", case_pat="^case_", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=FALSE)
+a <- analyze_s_predictions(c("asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
+a <- analyze_s_predictions(c("asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
+#a <- analyze_s_predictions("chd", case_pat="^case_", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
+#a <- analyze_s_predictions("chd", case_pat="^case_", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
+a <- analyze_s_predictions("hgmd", case_pat="_Regulatory", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
+a <- analyze_s_predictions("hgmd", case_pat="_Regulatory", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
 #a <- analyze_s_predictions(c("asd","asd1","asd2","asd3"), case_pat="-p", cutoff=0.04, transcribed_only=TRUE, regional=TRUE)
+
+# STOPPED HERE!!! TRY HGMD vs. RANDOM GNOMAD DATASET AND SEE IF THIS IS AT LEAST AS GOOD AS OUR GRADIENT BOOSTING METHOD!
+
+
 
 #################################################################################################################
 # REGION TYPE ANALYSIS
@@ -960,6 +1046,7 @@ setup_supermodel_data("transcribed100k_4", num_tasks_to_do=20)
 # Annotate AFs and region types for the random variants
 for(transcribed100k_i in c(1:4)) {
     transcribed100k_name = paste0("transcribed100k_",transcribed100k_i)
+    #transcribed100k_name = "asd2"
     print(transcribed100k_name)
     dat <- readRDS(output_path(paste0(transcribed100k_name,"_dat.rds")))
     region_types <- annotate_region_types(dat, version="hg38", region_types=c("CDS","five_prime_UTR","three_prime_UTR","five_prime_ss","three_prime_ss","intron","intergenic"), breakdown_CDS=FALSE, num_variants_to_sample=NULL)

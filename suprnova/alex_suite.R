@@ -245,6 +245,25 @@ cluster_overlapping_genes <- function(genes, verbose=TRUE) {
     return(genes)
 }
 
+# Multiple-threshold Enrichment Test
+multi_threshold_test <- function(cases, controls, thresholds=seq(0, 1, by=0.1), threshold_dir=">", feature_name=NULL, label="") {
+    feature = which(colnames(cases) == feature_name)[1]; if(is.na(feature)) { feature = 1 }
+    threshold_dir = 2*((threshold_dir == ">") - 0.5)
+    greater_than_threshold_fets <- unfactorize(data.frame(t(sapply(thresholds, function(threshold) {
+        m1 = sum((threshold_dir*cases[,feature]) >= (threshold_dir*threshold))
+        n1 = nrow(cases)
+        m0 = sum(threshold_dir*(controls[,feature]) >= (threshold_dir*threshold))
+        n0 = nrow(controls)
+        fet_result <- fisher.test(matrix(c(m1, n1-m1, m0, n0-m0), nrow = 2, dimnames = list(hits = c("Y", "N"), status = c("case", "control"))), alternative = "two.sided")
+        return(c(threshold, fet_result$estimate, fet_result$conf.int, fet_result$p.value, m1, m0, n1, n0)) 
+    })))); colnames(greater_than_threshold_fets) <- c("threshold", "estimate", "conf.int_lower", "conf.int_higher", "p.value", "m1", "m0", "n1", "n0")
+    greater_than_threshold_fets[greater_than_threshold_fets == Inf] <- 0
+    greater_than_threshold_fets[,c("estimate", "conf.int_lower", "conf.int_higher")] <- log2(greater_than_threshold_fets[,c("estimate", "conf.int_lower", "conf.int_higher")])
+    greater_than_threshold_fets[greater_than_threshold_fets == -Inf] <- 0
+    colnames(greater_than_threshold_fets) <- c("threshold", paste0(label,":", c("estimate", "conf.int_lower", "conf.int_higher", "p.value", "m1", "m0", "n1", "n0")))
+    return(greater_than_threshold_fets)
+}
+
 # Return histone modification function for the given histone mark
 get_histone_mark_function <- function(histone_mark) {
     info <- read.csv(data_path("histone_mark_information.csv"), skip=1)
@@ -379,8 +398,10 @@ update_os <- function() {
     if (nodename == "c2b2ysld5") { 
         # Path to data folder, allowing simpler loading of data with the alex_suite.R data_path function.
         DATA_FOLDER <<- "/home/local/ARCS/ak3792/Documents/Research/data"
+        # Path to big data folder, allowing simpler loading of big data with the alex_suite.R bigdata_path function.
+        BIGDATA_FOLDER <- "/mnt/data/ak3792"
         # Path to output folder, allowing simpler writing of output with the alex_suite.R output_path function.
-        OUTPUT_FOLDER <<- "/home/local/ARCS/ak3792/Documents/Research/WGS/output"
+        OUTPUT_FOLDER <<- "/home/local/ARCS/ak3792/Documents/Research/ML/output"
     } else if (nodename == "c2b2ysld1") { 
         # Path to data folder, allowing simpler loading of data with the alex_suite.R data_path function.
         DATA_FOLDER <<- "/home/local/ARCS/ak3792/machine/Research/data"

@@ -716,6 +716,7 @@ annotate_AFs <- function(dat_name, dat=NULL, version="hg38", type="v", num_tasks
         num_seqs = length(unique(paste0(regional_fully_unpacked$seq))); num_seqs
         seq_row_counts <- table(table(regional_fully_unpacked$sample)); seq_row_counts
         rows_per_seq = as.numeric(names(seq_row_counts))
+        width=151; arm_width = floor(width/2)
         rows_per_seq = width*3
         rows_per_seq == width*3
         regional_fully_unpacked_midpoints <- seq((arm_width+1)*3,nrow(regional_fully_unpacked),by=width*3)-1
@@ -851,44 +852,6 @@ calculate_gradcams <- function(input_tensor, work_folder, k_reset_freq=3, motif_
             # Normalize the heatmap between 0 and 1, for better visualization.
             heatmap <- pmax(heatmap, 0)
             heatmap <- heatmap / max(heatmap)
-            
-            #################################################################################################################################################
-            # CODE FOR DRAWING SEQUENCE HEATMAPS LIKE I SHOW IN PPT!
-            #################################################################################################################################################
-            # sequence <- strsplit(tensor_to_genomic_sequences(data[sequence_to_display,,,]), "")[[1]]
-            # sequence_length <- length(sequence)
-            # sequence_matrix <- suppressWarnings(matrix(sequence, ncol=ceiling(sqrt(ncol(data))), byrow=TRUE))
-            # if((ncol(sequence_matrix) * nrow(sequence_matrix)) > sequence_length) { sequence_matrix[nrow(sequence_matrix), seq((sequence_length %% ncol(sequence_matrix))+1, ncol(sequence_matrix))] <- "" }
-            # rownames(sequence_matrix) <- paste0(seq(1, sequence_length, by=ncol(sequence_matrix)),"...",sapply(seq(ncol(sequence_matrix), sequence_length+ncol(sequence_matrix)-1, by=ncol(sequence_matrix)), function(x) min(c(x, sequence_length))))
-            # library(plotrix)
-            # filename=output_path(paste0(model_name,"_seq",sequence_to_display,"_rbp_binding_heatmap.pdf"))
-            # pdf(file=filename)
-            # plot(-1, -1, xlim=c(0,1), ylim=c(0,1), main=paste0(colnames(labels)[labels[sequence_to_display,]==1],paste0(" seq",sequence_to_display),", pred_score=",round(pred_scores[sequence_index_to_display],3)), xlab="", ylab="", xaxt="n", yaxt="n", axes=FALSE, cex.main=1.6, cex.lab=1.5) #"RBP binding strength heatmap"
-            # #mtext(paste0(colnames(labels)[labels[sequence_to_display,]==1]," sequence, pred_score=",round(pred_scores[sequence_index_to_display],3)))
-            # sequence_matrix_cols <- matrix(c(adjustcolor(rgb(colorRamp(c("blue","white","red"))(heatmap[1:sequence_length]), maxColorValue=255), alpha.f = 0.8), rep("white", (ncol(sequence_matrix) * nrow(sequence_matrix)) - sequence_length)), ncol=ceiling(sqrt(ncol(data))), byrow=TRUE)
-            # addtable2plot("topleft",table=sequence_matrix, bg=sequence_matrix_cols, display.rownames=TRUE, display.colnames=FALSE, cex=2.2)
-            # 
-            # # Determine the optimal bound region of fixed motif_length from the heatmap 
-            # motif_start_index = which.max(rollapply(heatmap, width=motif_length, mean))
-            # motif_end_index = motif_start_index + motif_length - 1
-            # trimmed_binding_site <- paste0(sequence[motif_start_index:motif_end_index], collapse="")
-            # text(0.5, 0.01, paste0("Optimal binding site: ",trimmed_binding_site), cex=1.7, font=2)
-            # 
-            # dev.off()
-            # pdf_to_png(filename)
-            # 
-            # heatmap_smoothed <- rollapply(heatmap, width=motif_length, mean, align="left", partial=TRUE)
-            # motif_start_indices <- which(heatmap_smoothed >= motif_score_min_cutoff)
-            # motif_start_indices <- motif_start_indices[order(heatmap_smoothed[motif_start_indices], decreasing=TRUE)]
-            # get_best_nonoverlapping <- function(motif_start_indices) { if(length(motif_start_indices) > 0) { return(c(motif_start_indices[1], get_best_nonoverlapping(motif_start_indices[abs(motif_start_indices - motif_start_indices[1]) >= ceiling(motif_length*motif_min_percent_distinct)]))) } else { return(c()) } }
-            # motif_start_indices <- get_best_nonoverlapping(motif_start_indices)
-            # motif_end_indices <- motif_start_indices + motif_length - 1
-            # trimmed_binding_sites <- sapply(1:length(motif_start_indices), function(motif_i) paste0(sequence[motif_start_indices[motif_i]:motif_end_indices[motif_i]], collapse=""))
-            # 
-            # motifs_dat <- unfactorize(data.frame(rep(paste0("seq",sequence_to_display),length(motif_start_indices)), rep(model_name,length(motif_start_indices)), rep(pred_scores[sequence_index_to_display],length(motif_start_indices)), motif_start_indices, motif_end_indices, trimmed_binding_sites, heatmap_smoothed[motif_start_indices], heatmap_smoothed[motif_start_indices]/heatmap_smoothed[motif_start_indices][1]))
-            # colnames(motifs_dat) <- c("seq", "model", "pred_score", "start", "end", "motif", "score", "score_norm")
-            # return(motifs_dat)
-            
             return(heatmap)
         }), along=2)
         saveRDS(seq_heatmaps, rbp_filename)
@@ -946,6 +909,84 @@ split_gradcams <- function(full_dat_name, indices_groups) {
     }
     return(0)
 }
+# Draw GradCAM heatmaps on sequence, for motif binding interpretability.
+draw_gradcams <- function(sequences, gradcams, preds, labels, eclip_peaks=NULL, dat_name=NULL, sequence_indices_to_display=NULL, motif_length=7, draw_optimal_sites=TRUE, sequence_length=NULL, row_length=NULL) {
+    library(plotrix) # ALSO INCLUDE OPTION FOR dat_name = "transcribed100k_1, etc."
+    output_folder = paste(c(dat_name,"gradcam_heatmaps"),collapse="_"); dir.create(output_path(output_folder), showWarnings = FALSE)
+    if(is.null(sequence_indices_to_display)) { sequence_indices_to_display <- 1:length(sequences) }
+    draw_eclip_sites = !is.null(eclip_peaks)
+    for(seq_i in 1:length(sequence_indices_to_display)) {
+        model_name = labels[seq_i]; rbp_i = which(rbps == model_name)
+        sequence_index_to_display = sequence_indices_to_display[seq_i]
+        sequence <- strsplit(sequences[sequence_index_to_display],"")[[1]]
+        sequence[sequence == "T"] <- "U"
+        print(paste0("seq",sequence_index_to_display,", bound by ",model_name))
+        gradcam <- gradcams[sequence_index_to_display,,rbp_i,1]
+        pred_score = preds[sequence_index_to_display,rbp_i]
+        if(is.null(sequence_length)) { sequence_length = ncol(gradcams) }
+        if(is.null(row_length)) { row_length = ceiling(sequence_length**(1/1.7)) }
+        sequence_matrix <- suppressWarnings(matrix(sequence, ncol=row_length, byrow=TRUE))
+        if((ncol(sequence_matrix) * nrow(sequence_matrix)) > sequence_length) { sequence_matrix[nrow(sequence_matrix), seq((sequence_length %% ncol(sequence_matrix))+1, ncol(sequence_matrix))] <- "" }
+        if(nrow(sequence_matrix > 1)) { rownames(sequence_matrix) <- paste0(seq(1, sequence_length, by=ncol(sequence_matrix)),"...",sapply(seq(ncol(sequence_matrix), sequence_length+ncol(sequence_matrix)-1, by=ncol(sequence_matrix)), function(x) min(c(x, sequence_length)))) }
+        # Determine the optimal bound region of fixed motif_length from the heatmap
+        motif_start_index = which.max(rollapply(gradcam, width=motif_length, mean))
+        motif_end_index = motif_start_index + motif_length - 1
+        trimmed_binding_site <- paste0(sequence[motif_start_index:motif_end_index], collapse="")
+        
+        filename = full_path(output_path(output_folder), paste0(paste(c(dat_name,paste0("seq",sequence_index_to_display)),collapse="_"),"_",model_name,"_binding_heatmap.pdf"))
+        pdf(file=filename, width=10.62, height=5.8)
+        plot(-1, -1, xlim=c(0,1), ylim=c(0,1), main=paste0(paste(c(dat_name,paste0("seq",sequence_index_to_display)),collapse=" "),", ",model_name,"=",round(pred_score,3)), xlab="", ylab="", xaxt="n", yaxt="n", axes=FALSE, cex.main=1.6, cex.lab=1.5) #"RBP binding strength heatmap"
+        legend(0.28, 0.2, legend=c("eCLIP data", "Highest score"), col=c("green","yellow"), pch=15, box.col="white", ncol=2, cex=1.45)
+        #mtext(paste0(colnames(labels)[labels[sequence_index_to_display,]==1]," sequence, pred_score=",round(pred_scores[sequence_index_to_display],3)))
+        sequence_matrix_cols <- matrix(c(adjustcolor(rgb(colorRamp(c("blue","white","red"))(gradcam[1:sequence_length]), maxColorValue=255), alpha.f = 0.8), rep("white", (ncol(sequence_matrix) * nrow(sequence_matrix)) - sequence_length)), ncol=row_length, byrow=TRUE)
+        addtable2plot("topleft",table=sequence_matrix, bg=sequence_matrix_cols, bty="n", display.rownames=TRUE, display.colnames=FALSE, cex=2.2) 
+        if(draw_optimal_sites) {
+            sequence_matrix_binding_sites <- sequence_matrix; sequence_matrix_binding_sites[sequence_matrix_binding_sites %in% c("A","C","G","U")] <- " "
+            rownames(sequence_matrix_binding_sites) <- paste0(gsub("."," ",rownames(sequence_matrix_binding_sites)),"  ")
+            sequence_matrix_cols <- rep("yellow",length(sequence_matrix_cols))
+            optimal_site_loc = (motif_start_index:motif_end_index)
+            #print(optimal_site_loc)
+            for(x in optimal_site_loc) {
+                x_col = x %% row_length
+                #print(c(ceiling(x / row_length), (x_col==0)*row_length+x_col))
+                sequence_matrix_binding_sites[ceiling(x / row_length), (x_col==0)*row_length+x_col] <- "_"
+            }
+            sequence_matrix_binding_sites <- rbind(array("",dim(sequence_matrix_binding_sites)), sequence_matrix_binding_sites)
+            colnames(sequence_matrix_binding_sites) <- rep("_",row_length)
+            addtable2plot(0.152,1.9602,table=sequence_matrix_binding_sites, xpad=0.015, ypad=0, xjust=0, yjust=0, text.col=sequence_matrix_cols, bty="n", display.rownames=FALSE, display.colnames=TRUE, cex=3.2913) #3.29, xpad=0.015) coords 0.272,2.072
+        }
+        if(draw_eclip_sites) {
+            sequence_matrix_eclip <- sequence_matrix; sequence_matrix_eclip[sequence_matrix_eclip %in% c("A","C","G","U")] <- " "
+            rownames(sequence_matrix_eclip) <- paste0(gsub("."," ",rownames(sequence_matrix_eclip)),"  ")
+            sequence_matrix_cols <- rep("green",length(sequence_matrix_cols))
+            eclip_loc = unique(unlist(apply(eclip_peaks[[seq_i]], 1, function(x) { x <- as.numeric(x); return(max(1,x[1]):min(sequence_length,x[2])) })))
+            #print(eclip_loc)
+            for(x in eclip_loc) {
+                x_col = x %% row_length
+                #print(c(ceiling(x / row_length), (x_col==0)*row_length+x_col))
+                sequence_matrix_eclip[ceiling(x / row_length), (x_col==0)*row_length+x_col] <- "_"
+            }
+            sequence_matrix_eclip <- rbind(array("",dim(sequence_matrix_eclip)), sequence_matrix_eclip)
+            colnames(sequence_matrix_eclip) <- rep("_",row_length)
+            addtable2plot(0.152,1.9532,table=sequence_matrix_eclip, xpad=0.013, ypad=0, xjust=0, yjust=0, text.col=sequence_matrix_cols, bty="n", display.rownames=FALSE, display.colnames=TRUE, cex=3.2913) #3.29, xpad=0.015) coords 0.272,2.072
+        }
+        text(0.5, 0.01, paste0("Optimal binding site: ",trimmed_binding_site), cex=1.7, font=2)
+        dev.off()
+        pdf_to_png(filename, output_folder=output_folder)
+        
+        # heatmap_smoothed <- rollapply(heatmap, width=motif_length, mean, align="left", partial=TRUE)
+        # motif_start_indices <- which(heatmap_smoothed >= motif_score_min_cutoff)
+        # motif_start_indices <- motif_start_indices[order(heatmap_smoothed[motif_start_indices], decreasing=TRUE)]
+        # get_best_nonoverlapping <- function(motif_start_indices) { if(length(motif_start_indices) > 0) { return(c(motif_start_indices[1], get_best_nonoverlapping(motif_start_indices[abs(motif_start_indices - motif_start_indices[1]) >= ceiling(motif_length*motif_min_percent_distinct)]))) } else { return(c()) } }
+        # motif_start_indices <- get_best_nonoverlapping(motif_start_indices)
+        # motif_end_indices <- motif_start_indices + motif_length - 1
+        # trimmed_binding_sites <- sapply(1:length(motif_start_indices), function(motif_i) paste0(sequence[motif_start_indices[motif_i]:motif_end_indices[motif_i]], collapse=""))
+        # 
+        # motifs_dat <- unfactorize(data.frame(rep(paste0("seq",sequence_to_display),length(motif_start_indices)), rep(model_name,length(motif_start_indices)), rep(pred_scores[sequence_index_to_display],length(motif_start_indices)), motif_start_indices, motif_end_indices, trimmed_binding_sites, heatmap_smoothed[motif_start_indices], heatmap_smoothed[motif_start_indices]/heatmap_smoothed[motif_start_indices][1]))
+        # colnames(motifs_dat) <- c("seq", "model", "pred_score", "start", "end", "motif", "score", "score_norm")
+        # return(motifs_dat)
+    }
+}
 
 #################################################################################################################
 # MAIN: FUNCTIONS TO SETUP SUPERMODEL DATA TENSORS WITH A GIVEN NAME
@@ -954,7 +995,7 @@ split_gradcams <- function(full_dat_name, indices_groups) {
 # Turn a regional type of tensor into four different tensors representing each variant-specific possibility for vSUPRNOVA.
 # convert_tensor_to_variant_forms(paste0(c("transcribed100k_"),4))
 # convert_tensor_to_variant_forms(rev(paste0(c("transcribed100k_"),2:3)))
-# convert_tensor_to_variant_forms(paste0(c("asd"),c("",1:3)))
+# convert_tensor_to_variant_forms(paste0(c("hgmd"))
 convert_tensor_to_variant_forms <- function(dat_names, make_gradcams=TRUE) {
     alts <- c("A","C","G","T")
     for(dat_name in dat_names) {
@@ -1105,6 +1146,10 @@ setup_supermodel_data <- function(dat_name, dat=NULL, version="hg19", width=151,
     print(paste0(tasks_done," tasks completed!"))
     if(tasks_done > 0) { print("Exiting for now. Reboot R and re-run setup function again.") } else { print("Setup already complete!") }
 }
+
+regulatory_variant_dat <- read.csv(file="../WGS/output/regulatory_variants.tsv", sep="\t") 
+regulatory_variant_dat <- standardize_colnames(regulatory_variant_dat)
+setup_supermodel_data("hgmd", version="hg19")
 
 # Combine supermodel data that was processed and setup in split batches.
 # An example with ASD:> setup_supermodel_data("asd1"); setup_supermodel_data("asd2"); setup_supermodel_data("asd3"); combine_supermodel_data(dat_names=c("asd","asd1","asd2","asd3"), combined_dat_name="asd_all")
