@@ -40,17 +40,20 @@ source("suprnova_design.R")
 
 if(file.exists(output_path("rbp_order.rds"))) { rbp_order <- readRDS(output_path("rbp_order.rds"))
 } else { rbp_order <- order_rbps(); saveRDS(rbp_order, output_path("rbp_order.rds")) }
-load_supermodel_training_data("transcribed100k_1"); dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
-source("suprnova_design.R")
-s_anchor = log(5e-5) #log(mean((expected/af_tensor)[af_tensor > 0 & af_tensor < 1e-3]))
-s_upper_bound = 0.005
+s_anchor = log(5e-5) # 5e-5 #log(mean((expected/af_tensor)[af_tensor > 0 & af_tensor < 1e-3]))
+s_upper_bound = 0.01
 s_scaling_factor = (log(s_upper_bound) - s_anchor)
 cat(paste0("s = exp(s_model * s_scaling_factor + s_anchor)\ns_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3),"\n"),paste0("s_model = ",c(-1,0,1),"  ->  s = ",exp((c(-1,0,1)) * s_scaling_factor + s_anchor),"\n"))
-gc(); model <- define_supermodel_architecture(L=15, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=1, custom_conv1=TRUE, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor)
+load_supermodel_training_data("transcribed100k_1"); #dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
+source("suprnova_design.R")
+k_clear_session(); gc(); model <- define_supermodel_architecture(L=15, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=1, custom_conv1=TRUE, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor)
 model_layers <- lapply(model$layers, function(x) paste0("Output Dim: c(", gsub("[()]*","",gsub("list","",paste(gsub("NULL","N",x$get_output_shape_at(as.integer(0))),collapse=", "))),")"))
 names(model_layers) <- lapply(model$layers, function(x) x$name)
-model_layers[1:15]
-training_results <- train_supermodel(num_epochs=50, batch_size=256, rbp_order=rbp_order, fraction_for_training=0.8)
+model_layers[1:20]
+training_results <- train_supermodel(num_epochs=14, batch_size=1024, rbp_order=rbp_order, fraction_for_training=0.8)
+#test_indices <- 1:10
+#preds <- (model %>% predict(list(altref_gradcams[test_indices,,rbp_order,,drop=FALSE], dat_gradcams[test_indices,,rbp_order,,drop=FALSE], dat_obs_exp[test_indices,,drop=FALSE], expected[test_indices,,drop=FALSE], expected[test_indices,,drop=FALSE])))
+
 #maps_result <- plot_model_outputs(model, test_indices[rowSums(af_tensor)[test_indices]>0][1:100])
 #weighted_conv_altref <- unfactorize(data.frame(cbind(t(as.matrix(model$get_layer("conv_alt_ref")$weights[[1]][1,1,1,,])), as.matrix(model$get_layer("rbp_binding_dense")$weights[[1]])[,1])))
 #rownames(weighted_conv_altref) <- c(paste0("filter_",1:nrow(weighted_conv_altref))); colnames(weighted_conv_altref) <- c("Alt-Ref Delta", "Ref", "weight")
@@ -62,17 +65,40 @@ training_results <- train_supermodel(num_epochs=50, batch_size=256, rbp_order=rb
 dim(model$get_layer("rbp_binding_activation")$weights[[1]]); range(as.matrix(model$get_layer("rbp_binding_activation")$weights[[1]]))
 dim(model$get_layer("rbp_complex_activation")$weights[[1]]); range(as.matrix(model$get_layer("rbp_complex_activation")$weights[[1]]))
 dim(model$get_layer("gene_regulatory_disruption")$weights[[1]]); range(as.matrix(model$get_layer("gene_regulatory_disruption")$weights[[1]]))
+model$get_layer("d_conv")$weights[[1]]; model$get_layer("d_dense")$weights[[1]]
 #model$get_layer("rbp_complex_impacts_adjust")$weights[[1]]
 #model$get_layer("gene_constraint_activation")$weights[[1]]
 
+model$get_layer("s_dense")$weights[[1]]; model$get_layer("s_dense")$bias[[1]]; model$get_layer("d0")$weights[[1]]
+if(FALSE) {
+    model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_conv", "rbp_complex_activation", "central_site_select", "gene_regulatory_disruption", "d", "d_adjust"))
+    #model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_activation", "central_site_select", "d", "s")) #"selection_coef_output"))
+    print("Finding model activations...")
+    test_idx = 2:11
+    preds <- model_predict(model_s, test_idx)
+    for(i in 1:length(test_idx)) {
+        print(paste0("seq",test_idx[i]))
+        #preds[["altref_binding_changes"]][i,8,,]
+        print(paste0("LOF: ",sum(preds[["altref_binding_changes"]][i,8,,] > 0.1))); print(paste0("GOF: ",sum(preds[["altref_binding_changes"]][i,8,,] < -0.1)))
+        #preds[["rbp_complex_activation"]][i,,8,,1:5]; preds[["rbp_complex_activation"]][i,,8,,6:10]
+        #print(paste0("LOF: ",sum(preds[["rbp_complex_conv"]][i,,8,,] > 0.1))); print(paste0("GOF: ",sum(preds[["rbp_complex_conv"]][i,,8,,] < -0.1)))
+        #preds[["central_site_select"]][i,,]
+        print(paste0("LOF: ",sum(preds[["rbp_complex_activation"]][i,,8,,] > 0.1))); print(paste0("GOF: ",sum(preds[["rbp_complex_activation"]][i,,8,,] < -0.1)))
+        
+        preds[["gene_regulatory_disruption"]][i,,]
+    }
+    model$get_layer("gene_regulatory_disruption")$weights[[1]]
+    sum(as.matrix(model$get_layer("gene_regulatory_disruption")$weights[[1]] > 0))
+}
+
 #save_supermodel(model, "suprnova")
-#k_clear_session(); model <- load_supermodel("suprnova", L=15, num_filters=5, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor); gc()
+#k_clear_session(); model <- load_supermodel("suprnova", L=15, num_filters=5, rbp_kernel_width=3, sequence_kernel_width=1, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor, custom_conv1=TRUE); gc()
 #model_s <- get_activation_model(model, c("d", "s"))
 plot_model_distributions <- function(test_idx=NULL) {
     if(is.null(test_idx)) { test_idx = 1:nrow(altref_gradcams) }; set_global(test_idx)
     AFs_all <- af_tensor[test_idx,]; set_global(AFs_all)
     expected_all <- expected[test_idx,]; set_global(expected_all)
-    model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_activation", "central_site_select", "gene_regulatory_disruption", "d", "selection_coef_output", "s"))
+    model_s <- get_activation_model(model, c("rbp_binding_activation", "altref_binding_changes", "rbp_complex_activation", "central_site_select", "d", "selection_coef_output", "s"))
     print("Finding model activations...")
     gc(); preds <- model_predict(model_s, test_idx); set_global(preds)
     s_vals_all <- preds[["s"]]; s_vals_all[is.nan(s_vals_all)] <- 0; set_global(s_vals_all)
@@ -103,20 +129,29 @@ plot_model_distributions <- function(test_idx=NULL) {
     par(mar=par_mar+c(-0.25,0,-0.75,0))
     print(paste0("range(d) = c(",paste(range(preds[["d"]]),collapse=", "),")"))
     #filename=output_path(paste0("model_distributions_d.pdf")); pdf(file=filename)
-    plot(density(preds[["d"]]), lwd=1, col="blue", main="", xlab="gene reg. damagingness d", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-    mtext(paste0(round(4/3 * 100 * sum(preds[["d"]] > 0.75) / prod(dim(preds[["d"]])),2)," % of variants have d > 0.75"), cex=mtext_cex, line=1)
+    plot(density(preds[["d"]]), lwd=1, col="blue", main="", xlab="gene reg. damagingness |d|", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0(round(4/3 * 100 * sum(preds[["d"]] > 0.25) / prod(dim(preds[["d"]])),2)," % of variants have |d| > 0.25"), cex=mtext_cex, line=0.5)
+    mtext(paste0("|d| includes LOF and GOF, with assumed same s_het"), cex=mtext_cex, line=1.5)
+    #mtext(paste0(round(4/3 * 100 * sum(preds[["d"]] < -0.75) / prod(dim(preds[["d"]])),2)," % of variants have d < -0.75 (GOF)"), cex=mtext_cex, line=0.5)
     #dev.off(); pdf_to_png(filename)
     print(paste0("range(model_s) = c(",paste(range(preds[["selection_coef_output"]]),collapse=", ")))
-    #filename=output_path(paste0("model_distributions_s_coef.pdf")); pdf(file=filename)
-    plot(density(preds[["selection_coef_output"]]), lwd=1, col="blue", main="", xlab="in-model selection coef.", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-    mtext(paste0("s = exp(s_model * s_scaling_factor + s_anchor), "), cex=mtext_cex, line=1.5)
-    mtext(paste0("s_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3)), cex=mtext_cex, line=0.5)
-    #dev.off(); pdf_to_png(filename)
+    if(FALSE) {
+        #filename=output_path(paste0("model_distributions_s_coef.pdf")); pdf(file=filename)
+        plot(density(preds[["selection_coef_output"]]), lwd=1, col="blue", main="", xlab="in-model selection coef.", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+        mtext(paste0("s = exp(s_model * s_scaling_factor + s_anchor), "), cex=mtext_cex, line=1.5)
+        mtext(paste0("s_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3)), cex=mtext_cex, line=0.5)
+        #dev.off(); pdf_to_png(filename)
+    } else {
+        plot(density(dat_obs_exp[test_idx]), lwd=1, col="green", main="", xlab="s_het(PTV)", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+        mtext(paste0(round(4/3 * 100 * sum(dat_obs_exp[test_idx] > 0.25) / length(test_idx),2)," % of nearest genes have s_het > 0.25"), cex=mtext_cex, line=1)
+    }
     print(paste0("range(s) = c(",paste(range(preds[["s"]]),collapse=", "),"), mean(s) = ",mean(preds[["s"]])))
     #filename=output_path(paste0("model_distributions_s.pdf")); pdf(file=filename)
-    plot(density(log10(s_vals_all)), lwd=1, col="blue", main="", xlab="log10(selection coef. s)", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
-    mtext(paste0("mean(s) = ",mean(s_vals_all),", "), cex=mtext_cex, line=1.5)
-    mtext(paste0("mean(mu/AF) = ",mean((expected_all/AFs_all)[AFs_all > 0])), cex=mtext_cex, line=0.5)
+    plot(density(log10(s_vals_all)), lwd=1, col="red", main="", xlab="log10(selection coef. s)", cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
+    mtext(paste0(round(4/3 * 100 * sum(s_vals_all > 0.005) / length(s_vals_all),2)," % of variants have s > 0.005"), cex=mtext_cex, line=0.5)
+    mtext(paste0("median(s) = ",median(s_vals_all),", "), cex=mtext_cex, line=1.5)
+    #mtext(paste0("mean(s) = ",mean(s_vals_all),", "), cex=mtext_cex, line=1.5)
+    #mtext(paste0("mean(mu/AF) = ",mean((expected_all/AFs_all)[AFs_all > 0])), cex=mtext_cex, line=0.5)
     #dev.off(); pdf_to_png(filename)
     dev.off(); pdf_to_png(filename)
     par(mar=par_mar)
@@ -165,7 +200,7 @@ rbp_complex_activations[8,4,order(abs(rbp_complex_activations[8,4,]))]
 ##################STOPPED HERE!!!###################
 dim(preds[["gene_regulatory_disruption"]]); range(preds[["gene_regulatory_disruption"]])
 
-# Investigate relationship of region types vs variant score
+# Investigate relationship of region types vs variant score.
 investigate_region_type_relationship <- function(region_types, scores, bucket_cuts=NULL, num_buckets=5, quant_start=0, quant_end=0.95, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, include_class_any=NULL, tilted_labels=TRUE, scientific_notation=FALSE, draw_legend=TRUE, legend_loc="topleft", legend_ncol=1, legend_cex=0.8, class_label_cex=0.65, class_label_x_offset = 0.5, srt=60, verbose=FALSE) {
     scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
     if(is.null(include_class_any)) { include_class_any = normalize_counts }
@@ -220,10 +255,49 @@ investigate_region_type_relationship <- function(region_types, scores, bucket_cu
     par(mar=par_mar)
     if(tilted_labels) { b <- b_backup }
     write.csv(b_counts, output_path(paste0(score_type,"_region_type_comparison_counts.csv")))
+    
+    control_variant_counts <- b_counts["intron",]
+    all_fet_results <- apply(b_counts[!c(rownames(b_counts) %in% c("any class","intron")),], 1, function(x) {
+        fet_results <- unfactorize(data.frame(t(sapply(1:length(x), function(i) {
+            fet_result <- fisher_exact_test(x[i], control_variant_counts[i], x[1], control_variant_counts[1], alternative=c("two.sided"))
+            return(c(colnames(b_counts)[i], fet_result[["estimate"]], fet_result[["ci"]], fet_result[["p.value"]]))
+        })))); colnames(fet_results) <- c("score_bin", "OR", "conf.int_lower", "conf.int_upper", "p.value")
+        return(fet_results[-1,])
+    }); names(all_fet_results) <- rownames(b_counts)[!c(rownames(b_counts) %in% c("any class","intron"))]
+    
+    #optimal_cutoff_index = which(fet_results$OR < Inf & fet_results$OR > 1)[which.min(fet_results$p.value[fet_results$OR < Inf & fet_results$OR > 1])]
+    #cutoff <- cutoffs[optimal_cutoff_index]
+    #fet_result <- fet_results[optimal_cutoff_index,,drop=FALSE]
+    filename = output_path(paste0(score_type,"_region_type_enrichments.pdf"))
+    pdf(filename)
+    #cols <- rep("black", length(cutoffs)); cols[fet_results$p.value < 0.05] <- "red"
+    cols <- cols[!c(rownames(b_counts) %in% c("any class","intron"))] #c(brewer.pal(length(all_fet_results), "Spectral"))
+    gap = 5
+    x_lim <- c(1,(length(all_fet_results)-1)*(nrow(all_fet_results[[1]])+gap)-gap+1)
+    y_lim <- 1.05*c(min(unlist(sapply(all_fet_results,function(fet_results) log2(fet_results$conf.int_lower[fet_results$conf.int_lower!=-Inf & fet_results$conf.int_lower!=0])))),max(unlist(sapply(all_fet_results,function(fet_results) log2(fet_results$conf.int_upper[fet_results$conf.int_upper!=Inf & fet_results$conf.int_upper!=0])))))
+    for(fet_results_i in 1:length(all_fet_results)) {
+        fet_results <- all_fet_results[[fet_results_i]]
+        x_vals <- seq(fet_results_i,x_lim[2],by=nrow(all_fet_results[[1]])+gap)#; x_vals <- x_vals[-length(x_vals)]
+        if(fet_results_i == 1) {
+            plot(x_vals, log2(fet_results$OR), col=cols[fet_results_i], cex.axis=1.4, cex.lab=1.4, cex.main=1.3, pch=16, main=gsub("Distribution","Enrichments",main_text), xaxt="n", xlab="", ylab="log2(Odds Ratio)", xlim=x_lim, ylim=y_lim)
+            abline(h=0, lty=3, col="gray50")
+            mtext(paste0("Two-sided FET vs. intronic variants"), cex=1.2)
+            text(x_vals+6, par("usr")[3]-0.5, srt=0, adj=1, xpd=TRUE, labels=gsub("\\.\\.\\."," > ",fet_results$score_bin), cex=1.3)
+        } else { points(x_vals, log2(fet_results$OR), col=cols[fet_results_i], pch=16) }
+        for(i in 1:nrow(fet_results)) {
+            #print(paste0("Plotting CI at ",log2(fet_results$conf.int_lower[i]),", ",log2(fet_results$conf.int_upper[i])))
+            segments(x0=x_vals[i], y0=log2(fet_results$conf.int_lower[i]), x1=x_vals[i], y1=log2(fet_results$conf.int_upper[i]), col=cols[fet_results_i], lwd=1)
+        }
+    }
+    legend("bottomleft", legend=c(names(all_fet_results)), col=cols, ncol=4, pch=15, cex=legend_cex)
+    dev.off()
+    pdf_to_png(filename)
+    
+    
     return(b)
 }
 
-# Investigate relationship of variant score densities vs. region types
+# Investigate relationship of variant score densities vs. region types.
 investigate_score_vs_region_type_relationship <- function(region_types, scores, score_type="d", righttail_threshold=NULL, righttail_quantile=0.5, logscale=NULL, include_class_any=FALSE, verbose=FALSE) {
     scores_dims <- dim(scores); if(!is.null(scores_dims) && length(scores_dims) == 2) { scores <- apply(scores, 1, max) }
     cols <- c(rep("gray",include_class_any), brewer.pal(ncol(region_types), "Spectral"))
@@ -249,7 +323,7 @@ investigate_score_vs_region_type_relationship <- function(region_types, scores, 
             if(verbose) { print(plot_i) }
             if(plot_i == 0) { curr_indices <- rep(TRUE, nrow(region_types)); legend_text <- c("any class", legend_text)
             } else { curr_indices <- which(region_types[,plot_i] == TRUE) }
-            scores_density <- density(scores[curr_indices], from=0)
+            scores_density <- density(scores[curr_indices], from=0, width=0.1)
             if(plot_i == plot_i_start) {
                 domain = pmax(c(1.1*range(scores_density$x)),c(max(righttail*c(righttail_threshold,0)),0))
                 plot(scores_density, col=cols[plot_i+include_class_any], lwd=2, ylim=c(0,max(scores_density$y[scores_density$x > domain[1] & scores_density$x < domain[2]])*1.1), xlim=domain, xaxs="i", main=paste0("Distributions of ",gsub("^.*vs\\. ", "", main_text)," by Region Class"), xlab=xlab_text, cex.main=1.3, cex.lab=1.4, cex.axis=1.4)
@@ -270,34 +344,54 @@ s_upper_bound = 0.01
 s_scaling_factor = (log(s_upper_bound) - s_anchor)
 cat(paste0("s = exp(s_model * s_scaling_factor + s_anchor)\ns_anchor = ",round(s_anchor,3),", s_scaling_factor = ",round(s_scaling_factor,3),"\n"),paste0("s_model = ",c(-1,0,1),"  ->  s = ",exp(c(-1,0,1) * s_scaling_factor + s_anchor),"\n"))
 model <- load_supermodel("suprnova", L=15, num_filters=5, s_anchor=s_anchor, s_scaling_factor=s_scaling_factor, custom_conv1=TRUE); gc()
-model_s <- get_activation_model(model, c("d","s")); gc()
-AFs_all <- array(0,dim=c(0,4)); expected_all <- array(0,dim=c(0,4)); s_vals_all <- array(0,dim=c(0,4)); d_all <- array(0,dim=c(0,4)); region_types_all <- array(0,dim=c(0,8))
-dat_name = "transcribed100k_4"
-for(dat_name in paste0("transcribed100k_",c(1,2))) {
+activation_model <- get_activation_model(model, c("d","s")); gc()
+#AFs_all <- array(0,dim=c(0,4)); expected_all <- array(0,dim=c(0,4)); s_vals_all <- array(0,dim=c(0,4)); d_all <- array(0,dim=c(0,4)); region_types_all <- array(0,dim=c(0,12))
+AFs_all <- array(0,dim=c(0,1)); expected_all <- array(0,dim=c(0,1)); s_vals_all <- array(0,dim=c(0,1)); d_all <- array(0,dim=c(0,1)); region_types_all <- array(0,dim=c(0,12))
+#dat_name = "transcribed100k_4"
+spliceAI_cutoff = 0.8
+# Setup region types data frame
+for(dat_name in paste0("transcribed100k_",c(1:4))) {
     print(dat_name)
     load_supermodel_training_data(dat_name); dat_obs_exp[,1] <- rep(1,nrow(dat_obs_exp))
     refgene <- run_annovar(dat, "refGene", "hg38")
     is_canonical_splicing <- which(refgene$Func.refGene == "splicing")
-    test_idx = c(is_canonical_splicing,1:7500)
-    preds <- model_predict(model_s, test_idx)
+    test_idx = 1:nrow(dat) #c(is_canonical_splicing,1:7500)
+    
+    preds <- model_predict(activation_model, test_idx, batch_size=10000, alts=TRUE)
+    spliceAI_scores <- readRDS(output_path("transcribed100k_spliceAI.rds"))
+    a <- merge(dat[test_idx,], spliceAI_scores, all.x=TRUE)
+    DS_columns <- which(grepl("DS_",colnames(a)))
+    dat_ss <- unfactorize(data.frame(sapply(DS_columns, function(i) {
+        return(!is.na(a[,i]) & a[,i] > spliceAI_cutoff)
+    }))); colnames(dat_ss) <- colnames(a)[DS_columns]
+    ############## LEFT OFF HEFE!!!!!! MAKE SURE ALT IS BEING INCLUDED, AND USE SpliceAI SCORES INSTEAD OF "canon. splice" ike before
     s_vals <- preds[["s"]]; s_vals[which(is.nan(s_vals_all))] <- 0
     s_vals_all <- abind(s_vals_all, s_vals, along=1)
     canon_splice <- rep(FALSE, length(test_idx)); if(length(is_canonical_splicing) > 0) { canon_splice[1:length(is_canonical_splicing)] <- TRUE }
-    region_types_all <- abind(region_types_all, cbind(dat_region_types[test_idx,],canon_splice), along=1)
+    #print(nrow(dat_region_types[test_idx,])); print(nrow(canon_splice)); print(nrow(dat_ss))
+    region_types_all <- abind(region_types_all, cbind(dat_region_types[test_idx,],canon_splice,dat_ss), along=1)
     d_all <- abind(d_all, preds[["d"]], along=1)
-    AFs_all <- abind(AFs_all, af_tensor[test_idx,], along=1)
-    expected_all <- abind(expected_all, expected[test_idx,], along=1)
+    select_alt <- function(x, alts=dat$Alt) {
+        bases <- 1:4; names(bases) <- c("A","C","G","T")
+        return(cbind(sapply(1:nrow(x), function(i) x[i,bases[paste0(alts[i])]])))
+    }
+    AFs_all <- abind(AFs_all, select_alt(af_tensor)[test_idx,,drop=FALSE], along=1)
+    expected_all <- abind(expected_all, select_alt(expected)[test_idx,,drop=FALSE], along=1)
 }; region_types_all <- data.frame(region_types_all)
-colnames(region_types_all) <- c("CDS","5'UTR","3'UTR","5'ss","3'ss","intron","intergenic","canon. splice")
-region_types_all <- region_types_all[,which(!(colnames(region_types_all) %in% "intergenic"))]
+colnames(region_types_all) <- c("CDS","5'UTR","3'UTR","5'ss","3'ss","intron","intergenic","canon. splice",paste0(c("DS_AG","DS_AL","DS_DG","DS_DL")," > ",spliceAI_cutoff))
+region_types_all <- region_types_all[,which(!(colnames(region_types_all) %in% c("intergenic","canon. splice","5'ss","3'ss")))]
+region_types_all[rowSums(region_types_all) > 1,"intron"] <- 0
 # Plot region distributions for each score bucket.
-a <- investigate_region_type_relationship(region_types_all, d_all, num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=FALSE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_loc="topright", legend_ncol=1, scientific_notation=FALSE)
-a <- investigate_region_type_relationship(region_types_all, d_all, num_buckets=6, score_type="d", normalize_counts=TRUE, normalize_buckets=FALSE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_loc="topright", legend_ncol=2, scientific_notation=FALSE)
-a <- investigate_region_type_relationship(region_types_all, d_all, num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=1, scientific_notation=FALSE)
-a <- investigate_region_type_relationship(region_types_all, d_all, num_buckets=6, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=ceiling((ncol(dat_region_types)+1)/2), scientific_notation=FALSE)
+#bucket_cuts <- c(-Inf,0.6,0.7,0.75,0.8,0.85,0.9)
+bucket_cuts <- c(-Inf,0.1,0.2,0.3,0.4,0.5,0.6)
+#bucket_cuts <- rbind(bucket_cuts, rep(Inf,length(bucket_cuts)))
+a <- investigate_region_type_relationship(region_types_all, d_all, bucket_cuts=bucket_cuts, num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=FALSE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_loc="topright", legend_ncol=1, scientific_notation=FALSE)
+a <- investigate_region_type_relationship(region_types_all, d_all, bucket_cuts=bucket_cuts, num_buckets=6, score_type="d", normalize_counts=TRUE, normalize_buckets=FALSE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_loc="topright", legend_ncol=2, scientific_notation=FALSE)
+a <- investigate_region_type_relationship(region_types_all, d_all, bucket_cuts=bucket_cuts, num_buckets=6, score_type="d", normalize_counts=FALSE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=1, scientific_notation=FALSE)
+a <- investigate_region_type_relationship(region_types_all, d_all, bucket_cuts=bucket_cuts, num_buckets=6, score_type="d", normalize_counts=TRUE, normalize_buckets=TRUE, tilted_labels=TRUE, class_label_cex=1.1, class_label_x_offset=3.5, srt=0, draw_legend=TRUE, legend_ncol=ceiling((ncol(dat_region_types)+1)/2), scientific_notation=FALSE)
 a
 # Plot score distributions for each region type.
-investigate_score_vs_region_type_relationship(region_types_all, d_all, score_type="d", righttail_quantile=0.5)
+investigate_score_vs_region_type_relationship(region_types_all, d_all, score_type="d", righttail_threshold=0.65)
 
 
 range(preds[["conv_alt_ref"]])
@@ -822,20 +916,140 @@ draw_plot(data.frame(y=log10(max_s_gene)[log10(max_s_gene) > -2.35], x=log10(she
 shet_gene[log10(max_s_gene) > -2.35]
 unique(nearest_genes_all)[log10(max_s_gene) > -2.35]
 
+# Load RBP PWMs from Chaolin Zhang's mCrossBase data
+rbps <- get_features_by_group("RBP")
+rbp_mats <- lapply(rbps, function(rbp) {
+    print(rbp)
+    rbp_mat_headers <- c()
+    curr_rbp_mats <- lapply(0:9, function(i) {
+        rbp_mat_filename = data_path(paste0("mCrossBase_eCLIP_PWM/",rbp,".top10.cluster.m1.0",i,".mat"))
+        if(!file.exists(rbp_mat_filename)) { return(NULL) }
+        rbp_mat <- readLines(rbp_mat_filename)
+        rbp_mat_start = which(grepl("Consensus",rbp_mat))[1]+2;  rbp_mat_end = which(grepl("^IC",rbp_mat))[1]-2
+        if(is.na(rbp_mat_start) || is.na(rbp_mat_end)) { return(NULL) }
+        rbp_mat_headers <<- c(rbp_mat_headers, paste0("m1.0",i,", ",gsub("^.*\tN","N",rbp_mat[rbp_mat_start-2])))
+        rbp_mat <- Reduce(cbind,lapply(strsplit(rbp_mat[rbp_mat_start:rbp_mat_end],"\t"), function(x) { x <- as.numeric(x[2:5]); return(x/sum(x)) }))
+        rownames(rbp_mat) <- c("A","C","G","T"); colnames(rbp_mat) <- NULL
+        return(rbp_mat)
+    })
+    curr_rbp_mats <- curr_rbp_mats[1:length(rbp_mat_headers)]
+    if(length(curr_rbp_mats) > 0) { names(curr_rbp_mats) <- rbp_mat_headers
+    } else { curr_rbp_mats = c() }
+    return(curr_rbp_mats)
+}); names(rbp_mats) <- rbps
+print(rbp_mats[["K562.ZRANB2"]])
+print(rbp_mats[["adrenal_gland.HNRNPU"]])
+
 name = paste0("transcribed100k_",1)
 dat <- readRDS(output_path(paste0(name,"_dat.rds")))
 dat_eclip_overlaps <- readRDS(output_path(paste0(name,"_eclip_overlaps.rds")))
 
-for(name in paste0("transcribed100k_",1:4)) {
+binding_sites <- rbindlist(lapply(paste0("transcribed100k_",1:4), function(name) {
     print(name)
     dat_sequences <- readRDS(output_path(paste0(name,"_dat.rds")))$ref_sequence  #[to_keep,site_indices,,,drop=FALSE]
-    dat_gradcams <- readRDS(output_path(paste0(name,"_gradcams.rds")))
+    dat_gradcams <- readRDS(full_path("/data/suprnova_data", paste0(name,"_gradcams.rds")))
     rbp_binding_scores <- readRDS(output_path(paste0(name,"_binding_scores.rds")))
     dat_eclip_overlaps <- readRDS(output_path(paste0(name,"_eclip_overlaps.rds")))
     strong_binding_cutoff = 0.85
+    #idx = 1:nrow(dat_eclip_overlaps)
+    #binding_sites <- draw_gradcams(dat_sequences, dat_gradcams, rbp_binding_scores, draw=FALSE, labels=dat_eclip_overlaps$RBP[idx], eclip_peaks=lapply(idx, function(i) dat_eclip_overlaps[dat_eclip_overlaps$query == dat_eclip_overlaps$query[i] & dat_eclip_overlaps$RBP == dat_eclip_overlaps$RBP[i],4:5]), dat_name=name, sequence_indices_to_display=dat_eclip_overlaps$query[idx])
+    
     idx = which(apply(dat_eclip_overlaps, 1, function(x) { return(rbp_binding_scores[as.numeric(x[1]),which(rbps == x[3])]) }) > strong_binding_cutoff)
-    draw_gradcams(dat_sequences, dat_gradcams, rbp_binding_scores, labels=dat_eclip_overlaps$RBP[idx], eclip_peaks=lapply(idx, function(i) dat_eclip_overlaps[dat_eclip_overlaps$query == dat_eclip_overlaps$query[i] & dat_eclip_overlaps$RBP == dat_eclip_overlaps$RBP[i],4:5]), dat_name=name, sequence_indices_to_display=dat_eclip_overlaps$query[idx])
-}
+    binding_sites <- draw_gradcams(dat_sequences, dat_gradcams, rbp_binding_scores, draw=FALSE, labels=dat_eclip_overlaps$RBP[idx], eclip_peaks=lapply(idx, function(i) dat_eclip_overlaps[dat_eclip_overlaps$query == dat_eclip_overlaps$query[i] & dat_eclip_overlaps$RBP == dat_eclip_overlaps$RBP[i],4:5]), dat_name=name, sequence_indices_to_display=dat_eclip_overlaps$query[idx])
+    binding_sites$binding_site <- gsub("U","T",binding_sites$binding_site)
+    
+    genomic_sequences_to_tensor(dat_sequences[1])[1,,,]
+    
+    return(binding_sites)
+}))
+
+a <- sapply(unique(binding_sites$rbp), function(rbp) {
+    print(rbp)
+    sequences <- binding_sites$binding_site[binding_sites$rbp == rbp]
+    if(length(sequences) > 1) {
+        sequences_msa <- msa(sequences, type="dna", order="input", method="ClustalW") # ClustalOmega
+        m <- toPWM(consensusMatrix(sequences_msa@unmasked)[c("A","C","G","T"),], type="prob")
+    } else { m <- t(genomic_sequences_to_tensor(sequences)[1,,,]) }
+    
+    mCrossBase_matches <- sapply(1:length(rbp_mats), function(rbp_i) {
+        num_rbp_pwms = length(rbp_mats[[rbp_i]])
+        #print(paste(rbp_i, names(rbp_mats)[[rbp_i]], num_rbp_pwms))
+        if(num_rbp_pwms > 0 && !is.null(rbp_mats[[rbp_i]][[1]])) {
+            return(max(sapply(1:length(rbp_mats[[rbp_i]]), function(i) PWMSimilarity(m, rbp_mats[[rbp_i]][[i]], method = "Euclidean"))))
+        } else { return(NA) }
+    }); names(mCrossBase_matches) <- names(rbp_mats)
+    mCrossBase_matches
+    mCrossBase_matches[rbp]
+    mCrossBase_matches[which.min(mCrossBase_matches)]
+    pwm_match_quantile = sum(mCrossBase_matches[!is.na(mCrossBase_matches)] > mCrossBase_matches[rbp]) / sum(!is.na(mCrossBase_matches))
+    #print(paste0("PWM Match Quantile: ", pwm_match_quantile))
+    return(c(mCrossBase_matches[rbp], mean(mCrossBase_matches[names(mCrossBase_matches) != rbp & !is.na(mCrossBase_matches)]), pwm_match_quantile))
+})
+filename=output_path("rbp_mCrossBase_comparison.pdf")
+pdf(file=filename, width=14)
+par(mfrow=c(1,2))
+plot(density(a[2,][!is.na(a[2,])], from=0, to=1), lwd=2, col="blue", xaxs="i", main="GradCAM Motifs to RBP PWMs Similarity", xlab="Euclidian distance", cex.main=1.3, cex.axis=1.4, cex.lab=1.4)
+lines(density(a[1,][!is.na(a[1,])], from=0, to=1), lwd=2, col="red")
+mtext("RBP PWMs obtained from mCrossBase", cex=1.2)
+legend("topright", legend=c("same RBP", "other RBPs"), col=c("red", "blue"), cex=1.2, pch=15)
+plot(density(a[3,][!is.na(a[3,])], from=0, to=1), lwd=2, xaxs="i", main="Distribution of Canonical Motif Proximity Rank", xlab="Proximity Quantile", cex.main=1.3, cex.axis=1.4, cex.lab=1.4)
+mtext("Proximity is (1 - Euclidian distance); ranking done across all RBPs", cex=1.2)
+dev.off()
+pdf_to_png(filename)
+par(mfrow=c(1,1))
+
+rbp_mats[[rbp]][[1]]
+
+matchPWM(rbp_mats[[rbp]][[1]], m)
+
+toPWM(m, type="prob")
+rbp_sequences <- get_aligned_sequences(rbp_granges, min_sequence_length=min_sequence_length, max_sequence_length=max_sequence_length, bucket_size=bucket_size, bucket=bucket, shuffle=FALSE, filename=output_path(paste0(rbp,"_eclip_msa",bucket,".csv")))
+rbp_sequences <- rbp_sequences[!grepl("[^ATCG]", rbp_sequences)]
+
+if(composite) { rbp_sequences <- sequence_composite(rbp_sequences) }
+rbp_pwm <- TFBSTools::toPWM(rbp_sequences, type="prob", pseudocounts=0.8,  bg=genomic.acgt)
+rbp_seqlogo_pwm <- makePWM(rbp_pwm)
+rbp_seqlogo_pwm@consensus; rbp_seqlogo_pwm@ic
+
+
+toPWM(rbp_mats[["K562.ZRANB2"]][[1]])
+ls(rbp_mats)
+PWMSimilarity(rbp_mats[["K562.ZRANB2"]][[1]], rbp_mats[["K562.YBX3"]][[1]], method = "Euclidean") #method = c("Euclidean", "Pearson", "KL")
+PWMSimilarity(rbp_mats[["K562.ZRANB2"]][[1]], rbp_mats[["K562.ZRANB2"]][[1]], method = "KL")
+
+
+seqweaver_scores <- read.csv("/data/alex_data/alex_output/final_outputs/seqweaver_results.tsv", sep="\t")
+
+# Load SpliceAI scores from SpliceAI annotation output file.
+#INFO=<ID=SpliceAI,Number=.,Type=String,Description="SpliceAIv1.3.1 variant annotation. 
+#These include delta scores (DS) and delta positions (DP) for acceptor gain (AG), acceptor loss (AL), donor gain (DG), and donor loss (DL). 
+#Format: ALLELE|SYMBOL|DS_AG|DS_AL|DS_DG|DS_DL|DP_AG|DP_AL|DP_DG|DP_DL"
+# Delta score (DS_AG, DS_AL, DS_DG, DS_DL) 0 to 1: Probability of the variant being splice-altering. Suggested cutoffs: 0.2 (high recall/likely pathogenic), 0.5 (recommended/pathogenic), 0.8 (high precision/pathogenic), but beware differences in sensitivity between deep intronic and exonic/near exonic variants (Fig 2F). No effect: <0.01 or <0.1?
+# Delta position (DP_AG, DP_AL, DP_DG, DP_DL): Location where splicing changes relative to the variant position (positive = upstream).
+spliceAI_scores <- unfactorize(read.csv("/data/spliceAI/spliceAI_output.vcf", sep="\t", skip=29))
+spliceAI_annotations <- lapply(spliceAI_scores$INFO, function(x) { return(strsplit(gsub("^SpliceAI=.\\|","",x),"\\|")[[1]]) })
+valid_spliceAI_indices <- which(unlist(lapply(spliceAI_annotations, length)) == 9)
+spliceAI_scores <- cbind(spliceAI_scores[valid_spliceAI_indices,-ncol(spliceAI_scores)], Reduce(rbind,spliceAI_annotations[valid_spliceAI_indices])) 
+colnames(spliceAI_scores)[c(1,(ncol(spliceAI_scores)-8):ncol(spliceAI_scores))] <- c("Chrom","gene","DS_AG","DS_AL","DS_DG","DS_DL","DP_AG","DP_AL","DP_DG","DP_DL")
+spliceAI_scores <- unfactorize(standardize_colnames(spliceAI_scores))
+saveRDS(spliceAI_scores, output_path("transcribed100k_spliceAI.rds"))
+
+spliceAI_scores <- readRDS(output_path("transcribed100k_spliceAI.rds"))
+spliceAI_cutoffs <- c(0.01,0.1,0.2,0.5,0.8)
+dat_names <- paste0("transcribed100k_",1:4)
+total_vars <- 0
+a_ss <- Reduce(function(d1,d2) { d2[,-1] <- d1[,-1]+d2[,-1]; return(d2) }, lapply(dat_names, function(name) {
+    print(name)
+    to_keep <- load_supermodel_training_data(name, load_gradcams=FALSE)
+    total_vars <<- total_vars + nrow(dat)
+    a <- merge(dat, spliceAI_scores, all.x=TRUE); sum(!is.na(a$gene))
+    a_ss <- unfactorize(data.frame(t(sapply(which(grepl("DS_",colnames(a))), function(i) {
+        return(c(colnames(a)[i], sapply(spliceAI_cutoffs, function(spliceAI_cutoff) sum(a[,i][!is.na(a[,i])] > spliceAI_cutoff))))
+    })))); colnames(a_ss) <- c("site_type", paste0("DS > ",spliceAI_cutoffs))
+    return(a_ss)
+}))
+a_ss; total_vars
+a_ss[,-1] / total_vars
 
 ##################################################################################################
 # Setup CHD/SSC data frames (data freeze in accepted Nature paper, with FreeBayes)
@@ -874,15 +1088,13 @@ analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, c
             #dat_obs_exp <- readRDS(output_path(paste0(dat_name,"_obs_exp.rds")))
             #dat_cpg <- readRDS(output_path(paste0(dat_name,"_cpg.rds")))
             activation_model <- get_activation_model(model, "s")
+            print("Made activation model.")
             arm_width = floor(activation_model$input[[1]]$shape[[2]]/2)
             midpoint = ceiling(ncol(dat_gradcams)/2)
-            activations <- activation_model %>% predict(list(altref_gradcams[,(midpoint-arm_width):(midpoint+arm_width),rbp_order,,drop=FALSE], dat_gradcams[,(midpoint-arm_width):(midpoint+arm_width),rbp_order,,drop=FALSE], dat_obs_exp[,,drop=FALSE], expected[,,drop=FALSE], expected[,,drop=FALSE]))
-            if(class(activations) == "list") {
-                s_vals_all <- activations[[which(layers_to_investigate == "s")]]
-            } else { # activations is a matrix instead of a list, caused by having just a single entity in layers_to_investigate
-                s_vals_all <- activations
-            }
-            s_vals_all[s_vals_all == -Inf | s_vals_all == Inf] <- 0
+            dat_gradcams <- dat_gradcams[,(midpoint-arm_width):(midpoint+arm_width),,,drop=FALSE]
+            midpoint = ceiling(ncol(altref_gradcams)/2)
+            altref_gradcams <- altref_gradcams[,(midpoint-arm_width):(midpoint+arm_width),,,drop=FALSE]
+            s_vals_all <- model_predict(activation_model)$s; s_vals_all[is.nan(s_vals_all)] <- 0
             bases <- 1:4; names(bases) <- c("A","C","G","T")
             s_vals_all <- cbind(sapply(1:nrow(dat), function(i) s_vals_all[i,bases[paste0(dat$Alt[i])]]))
             saveRDS(s_vals_all, dat_s_preds_filename)
@@ -1009,8 +1221,8 @@ analyze_s_predictions <- function(dat_names, case_pat=NULL, case_indices=NULL, c
 }
 #analyze_s_predictions("chd", case_pat="^case_")
 #model <- load_supermodel("suprnova")
-a <- analyze_s_predictions(c("asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
-a <- analyze_s_predictions(c("asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
+a <- analyze_s_predictions(c("asd","asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
+a <- analyze_s_predictions(c("asd","asd1","asd2"), case_pat="-p", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
 #a <- analyze_s_predictions("chd", case_pat="^case_", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
 #a <- analyze_s_predictions("chd", case_pat="^case_", cutoff=0.002, transcribed_only=FALSE, regional=FALSE, rewrite=TRUE)
 a <- analyze_s_predictions("hgmd", case_pat="_Regulatory", cutoff=0.002, transcribed_only=TRUE, regional=FALSE, rewrite=TRUE)
@@ -1046,7 +1258,7 @@ setup_supermodel_data("transcribed100k_4", num_tasks_to_do=20)
 # Annotate AFs and region types for the random variants
 for(transcribed100k_i in c(1:4)) {
     transcribed100k_name = paste0("transcribed100k_",transcribed100k_i)
-    #transcribed100k_name = "asd2"
+    #transcribed100k_name = "asd"
     print(transcribed100k_name)
     dat <- readRDS(output_path(paste0(transcribed100k_name,"_dat.rds")))
     region_types <- annotate_region_types(dat, version="hg38", region_types=c("CDS","five_prime_UTR","three_prime_UTR","five_prime_ss","three_prime_ss","intron","intergenic"), breakdown_CDS=FALSE, num_variants_to_sample=NULL)
